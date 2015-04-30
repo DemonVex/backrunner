@@ -11,7 +11,7 @@ RUN apt-get update && apt-get -y upgrade && \
 
 RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	export GOPATH=/root/go && \
-	VERSION=go1.4.2 && \
+	VERSION=go1.3.3 && \
 	curl -f -I https://storage.googleapis.com/golang/$VERSION.linux-amd64.tar.gz && \
 	test `go version | awk {'print $3'}` = $VERSION || \
 	echo "Downloading" && \
@@ -28,9 +28,9 @@ RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	cd /root/go/src/github.com/bioothod/elliptics-go/elliptics && \
 	go install && \
 	echo "Go binding has been updated" && \
-	cd /root/go/src/github.com/bioothod && \
+	cd /root/go/src/github.com/DemonVex && \
 	git clone https://github.com/DemonVex/backrunner.git && \
-	cd /root/go/src/github.com/bioothod/backrunner && \
+	cd /root/go/src/github.com/DemonVex/backrunner && \
 	go get && go install && \
 	echo "Backrunner has been updated";
 
