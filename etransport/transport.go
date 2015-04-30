@@ -4,7 +4,7 @@ import (
 	"C"
 	"fmt"
 	"github.com/bioothod/elliptics-go/elliptics"
-	"github.com/bioothod/backrunner/config"
+	"github.com/DemonVex/backrunner/config"
 	"io"
 	"log"
 	"math/rand"

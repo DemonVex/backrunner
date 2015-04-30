@@ -3,7 +3,7 @@ package config225
 import (
 	"encoding/json"
 	"fmt"
-	cnf "github.com/bioothod/backrunner/config"
+	cnf "github.com/DemonVex/backrunner/config"
 	"io/ioutil"
 )
 

@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	cnf "github.com/bioothod/backrunner/config"
+	cnf "github.com/DemonVex/backrunner/config"
 	"log"
 	"strings"
 )

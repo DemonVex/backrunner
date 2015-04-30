@@ -2,9 +2,9 @@ package btest
 
 import (
 	"fmt"
-	"github.com/bioothod/backrunner/bucket"
-	cnf "github.com/bioothod/backrunner/config"
-	"github.com/bioothod/backrunner/etransport"
+	"github.com/DemonVex/backrunner/bucket"
+	cnf "github.com/DemonVex/backrunner/config"
+	"github.com/DemonVex/backrunner/etransport"
 	"log"
 	"math/rand"
 	"os"

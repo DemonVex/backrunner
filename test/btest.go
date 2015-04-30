@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/bioothod/backrunner/test/btest"
+	"github.com/DemonVex/backrunner/test/btest"
 	"log"
 	"os"
 )

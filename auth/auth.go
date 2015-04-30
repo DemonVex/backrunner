@@ -5,7 +5,6 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
-	//"github.com/bioothod/backrunner/errors"
 	"net/http"
 	"net/url"
 	"sort"

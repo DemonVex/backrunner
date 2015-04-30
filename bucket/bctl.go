@@ -1,10 +1,10 @@
 package bucket
 
 import (
-	"github.com/bioothod/backrunner/config"
-	"github.com/bioothod/backrunner/errors"
-	"github.com/bioothod/backrunner/etransport"
-	"github.com/bioothod/backrunner/reply"
+	"github.com/DemonVex/backrunner/config"
+	"github.com/DemonVex/backrunner/errors"
+	"github.com/DemonVex/backrunner/etransport"
+	"github.com/DemonVex/backrunner/reply"
 	"github.com/bioothod/elliptics-go/elliptics"
 	"fmt"
 	"io/ioutil"

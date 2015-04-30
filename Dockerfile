@@ -1,9 +1,16 @@
-FROM reverbrain/backrunner
+FROM ubuntu:trusty
 
-RUN	apt-get update && \
-	apt-get upgrade -y
+RUN apt-get update && apt-get -y upgrade && \
+	apt-get install -y curl git g++ && \
+	curl http://repo.reverbrain.com/REVERBRAIN.GPG | apt-key add - && \
+	echo "deb http://repo.reverbrain.com/trusty/ current/amd64/" > /etc/apt/sources.list.d/reverbrain.list && \
+	echo "deb http://repo.reverbrain.com/trusty/ current/all/" >> /etc/apt/sources.list.d/reverbrain.list && \
+	apt-get update && \
+	apt-get install -y elliptics elliptics-dev && \
+	rm -rf /var/lib/apt/lists/*
 
-RUN 	. /etc/profile.d/go.sh && \
+RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
+	export GOPATH=/root/go && \
 	VERSION=go1.4.2 && \
 	curl -f -I https://storage.googleapis.com/golang/$VERSION.linux-amd64.tar.gz && \
 	test `go version | awk {'print $3'}` = $VERSION || \
@@ -12,20 +19,19 @@ RUN 	. /etc/profile.d/go.sh && \
 	rm -rf /usr/local/go && \
 	tar -C /usr/local -xf $VERSION.linux-amd64.tar.gz && \
 	rm -f $VERSION.linux-amd64.tar.gz
-
-RUN 	. /etc/profile.d/go.sh && \
+	
+RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
+	export GOPATH=/root/go && \
+	mkdir -p /root/go/src/github.com/bioothod && \
+	cd /root/go/src/github.com/bioothod && \
+	git clone https://github.com/bioothod/elliptics-go.git && \
 	cd /root/go/src/github.com/bioothod/elliptics-go/elliptics && \
-	git checkout master && \
-	git pull && \
-	git branch -v && \
 	go install && \
 	echo "Go binding has been updated" && \
+	cd /root/go/src/github.com/bioothod && \
+	git clone https://github.com/DemonVex/backrunner.git && \
 	cd /root/go/src/github.com/bioothod/backrunner && \
-	git checkout master && \
-	git pull && \
-	git branch -v && \
-	go install && \
-	echo "Backrunner has been updated" ;\
-    	rm -rf /var/lib/apt/lists/*
+	go get && go install && \
+	echo "Backrunner has been updated";
 
-EXPOSE 9090 80
+EXPOSE 9090 8080

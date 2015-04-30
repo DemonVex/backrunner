@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/bioothod/backrunner/bucket"
-	"github.com/bioothod/backrunner/config"
-	"github.com/bioothod/backrunner/etransport"
+	"github.com/DemonVex/backrunner/bucket"
+	"github.com/DemonVex/backrunner/config"
+	"github.com/DemonVex/backrunner/etransport"
 	"io/ioutil"
 	"log"
 )
