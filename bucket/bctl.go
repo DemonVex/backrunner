@@ -33,17 +33,18 @@ const (
 	PainStatRO float64		= PainNoFreeSpaceHard / 2
 
 	// this is randomly selected error gain for buckets where upload has failed
-	BucketWriteErrorPain float64	= PainNoFreeSpaceHard / 3
+	BucketWriteErrorPain float64	= PainNoFreeSpaceHard / 2
 
 	// pain for group without statistics
-	PainNoStats float64		= PainNoFreeSpaceHard / 3
+	PainNoStats float64		= PainNoFreeSpaceHard / 2
 
 	// pain for group where statistics contains error field
-	PainStatError float64		= PainNoFreeSpaceHard / 3
+	PainStatError float64		= PainNoFreeSpaceHard / 2
 
 	// pain for bucket which do not have its group in stats
-	PainNoGroup float64		= PainNoFreeSpaceHard / 3
+	PainNoGroup float64		= PainNoFreeSpaceHard / 2
 
+	PainDiscrepancy float64		= 1000.0
 )
 
 func URIOffsetSize(req *http.Request) (offset uint64, size uint64, err error) {
@@ -234,15 +235,6 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 				continue
 			}
 
-			if st.Error.Code != 0 {
-				// this is usually a timeout error
-
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				bs.Pain += PainStatError
-				continue
-			}
-
 			if st.RO {
 				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
@@ -294,19 +286,46 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 
 		bs.Pain += float64(diff) * PainNoGroup
 
+		// calculate discrepancy pain:
+		// run over all address+backends in every group in given bucket,
+		// sum up number of live records
+		// set discrepancy as a maximum difference between number of records among all groups
+		var min_records uint64 = 1<<31-1
+		var max_records uint64 = 0
+
+		records := make([]uint64, 0)
+		for _, sg := range b.Group {
+			var r uint64 = 0
+
+			for _, sb := range sg.Ab {
+				r += sb.VFS.RecordsTotal - sb.VFS.RecordsRemoved
+			}
+
+			records = append(records, r)
+		}
+
+		for _, r := range records {
+			if r < min_records {
+				min_records = r
+			}
+
+			if r > max_records {
+				max_records = r
+			}
+		}
+		bs.Pain += float64(max_records - min_records) * PainDiscrepancy
+
+
 		// do not even consider buckets without free space even in one group
 		if bs.Pain >= PainNoFreeSpaceHard {
-			log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
-				req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
-				bs.pains, bs.free_rates)
+			//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
+			//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
+			//	bs.pains, bs.free_rates)
 			continue
 		}
 
 		if bs.Pain != 0 {
 			bs.Range = 1.0 / bs.Pain
-			if bs.Range == 0 {
-				bs.Range = 1
-			}
 		} else {
 			bs.Range = 1.0
 		}
@@ -316,17 +335,17 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 
 	bctl.RUnlock()
 
-	str := make([]string, 0)
-	for _, bs := range stat {
-		str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, pain: %f, free-rates: %v}",
-			bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.Pain, bs.free_rates))
-	}
-
-	log.Printf("find-bucket: url: %s, content-length: %d: %v", req.URL.String(), req.ContentLength, str)
-
 	// there are no buckets suitable for this request
 	// either there is no space in either bucket, or there are no buckets at all
 	if len(stat) == 0 {
+		str := make([]string, 0)
+		for _, bs := range stat {
+			str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, pain: %f, free-rates: %v}",
+				bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.Pain, bs.free_rates))
+		}
+
+		log.Printf("find-bucket: url: %s, content-length: %d: there are no suitable buckets: %v",
+			req.URL.String(), req.ContentLength, str)
 		return nil
 	}
 
@@ -351,6 +370,14 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 
 		stat = tmp
 	}
+
+	str := make([]string, 0)
+	for _, bs := range stat {
+		str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, pain: %f, free-rates: %v}",
+			bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.Pain, bs.free_rates))
+	}
+
+	log.Printf("find-bucket: url: %s, content-length: %d: %v", req.URL.String(), req.ContentLength, str)
 
 	var sum int64 = 0
 	for {
@@ -468,7 +495,13 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 				str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: %v, pain: %f -> %f}",
 					res.Group, time_us, e, estring, old_pain, st.PIDPain()))
+			} else {
+				str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no backend stat}",
+					res.Group, time_us, e))
 			}
+		} else {
+			str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no group stat}",
+				res.Group, time_us, e))
 		}
 	}
 
@@ -716,7 +749,6 @@ func (bctl *BucketCtl) BulkDelete(bname string, keys []string, req *http.Request
 type BucketStat struct {
 	Group		map[string]*elliptics.StatGroupData
 	Meta		*BucketMsgpack
-	NeedRecovery	string
 }
 
 type BctlStat struct {
@@ -737,22 +769,11 @@ func (bctl *BucketCtl) Stat(req *http.Request) (reply *BctlStat, err error) {
 		bs := &BucketStat {
 			Group:	make(map[string]*elliptics.StatGroupData),
 			Meta:	&b.Meta,
-			NeedRecovery:	"not-needed",
 		}
 
 		for group, sg := range b.Group {
 			sg_data := sg.StatGroupData()
 			bs.Group[fmt.Sprintf("%d", group)] = sg_data
-
-			for _, tmp := range bs.Group {
-				if tmp.RecordsTotal - tmp.RecordsRemoved != sg_data.RecordsTotal - sg_data.RecordsRemoved {
-					bs.NeedRecovery = "DC"
-				}
-			}
-		}
-
-		if len(bs.Group) != len(b.Meta.Groups) {
-			bs.NeedRecovery = "WHOLE-GROUP"
 		}
 
 		reply.Buckets[b.Name] = bs
