@@ -205,6 +205,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	}
 
 	stat := make([]*bucket_stat, 0)
+	failed := make([]*bucket_stat, 0)
 
 	bctl.RLock()
 
@@ -242,8 +243,15 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 				continue
 			}
 
+			if st.Error.Code != 0 {
+				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+				bs.Pain += PainStatError
+				continue
+			}
+
 			// this is an empty stat structure
-			if st.VFS.TotalSizeLimit == 0 || st.VFS.Total  == 0{
+			if st.VFS.TotalSizeLimit == 0 || st.VFS.Total  == 0 {
 				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
 				bs.Pain += PainNoStats
@@ -258,12 +266,12 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 			} else if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioSoft {
 				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
-				free_space_pain := 100.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioHard)
+				free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioHard)
 				bs.Pain += PainNoFreeSpaceSoft + free_space_pain * 5
 			} else {
 				bs.SuccessGroups = append(bs.SuccessGroups, group_id)
 
-				free_space_pain := 100.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioSoft)
+				free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioSoft)
 				if free_space_pain >= PainNoFreeSpaceSoft {
 					free_space_pain = PainNoFreeSpaceSoft * 0.8
 				}
@@ -321,6 +329,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 			//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
 			//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
 			//	bs.pains, bs.free_rates)
+			failed = append(failed, bs)
 			continue
 		}
 
@@ -339,7 +348,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	// either there is no space in either bucket, or there are no buckets at all
 	if len(stat) == 0 {
 		str := make([]string, 0)
-		for _, bs := range stat {
+		for _, bs := range failed {
 			str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, pain: %f, free-rates: %v}",
 				bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.Pain, bs.free_rates))
 		}
@@ -811,10 +820,17 @@ func (bctl *BucketCtl) ReadBucketConfig() error {
 		return err
 	}
 
+	stat, err := bctl.e.Stat()
+	if err != nil {
+		return err
+	}
+
 	bctl.Lock()
 	bctl.Bucket = new_buckets
+	err = bctl.BucketStatUpdateNolock(stat)
 	bctl.Unlock()
 
+	log.Printf("Bucket config has been updated, there are %d writable buckets\n", len(new_buckets))
 	return nil
 }
 
@@ -829,6 +845,10 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 	bctl.Conf = conf
 	bctl.Unlock()
 
+	if bctl.e.LogFile != nil {
+		bctl.e.LogFile.Close()
+	}
+
 	bctl.e.LogFile, err = os.OpenFile(conf.Elliptics.LogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
 	if err != nil {
 		log.Fatalf("Could not open log file '%s': %q", conf.Elliptics.LogFile, err)
@@ -838,6 +858,7 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 	log.SetOutput(bctl.e.LogFile)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	log.Printf("Proxy config has been updated\n")
 	return nil
 
 }
@@ -877,53 +898,6 @@ func (bctl *BucketCtl) ReadBucketsMetaNolock(names []string) (new_buckets []*Buc
 	return
 }
 
-func (bctl *BucketCtl) ReadAllBucketsMeta() (err error) {
-	bnames := make([]string, 0)
-	bback_names := make([]string, 0)
-
-	bctl.RLock()
-	if len(bctl.Bucket) != 0 {
-		for _, b := range bctl.Bucket {
-			bnames = append(bnames, b.Name)
-		}
-	}
-	if len(bctl.BackBucket) != 0 {
-		for _, b := range bctl.BackBucket {
-			bback_names = append(bnames, b.Name)
-		}
-	}
-	bctl.RUnlock()
-
-
-	new_buckets, err := bctl.ReadBucketsMetaNolock(bnames)
-	if err != nil {
-		log.Printf("read-all-buckets-meta: could not read buckets: %v\n", err)
-	}
-	new_back_buckets, err := bctl.ReadBucketsMetaNolock(bback_names)
-	if err != nil {
-		log.Printf("read-all-buckets-meta: could not read back buckets: %v\n", err)
-	}
-
-	stat, err := bctl.e.Stat()
-	if err != nil {
-		return err
-	}
-
-	bctl.Lock()
-	if new_buckets != nil {
-		bctl.Bucket = new_buckets
-	}
-
-	if new_back_buckets != nil {
-		bctl.BackBucket = new_back_buckets
-	}
-
-	err = bctl.BucketStatUpdateNolock(stat)
-	bctl.Unlock()
-
-	return err
-}
-
 func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path string) (bctl *BucketCtl, err error) {
 	bctl = &BucketCtl {
 		e:			ell,
@@ -946,7 +920,6 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 	if err != nil {
 		return
 	}
-	bctl.ReadAllBucketsMeta()
 
 	signal.Notify(bctl.signals, syscall.SIGHUP)
 
@@ -972,7 +945,7 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 		for {
 			select {
 			case <-bctl.BucketTimer.C:
-				bctl.ReadAllBucketsMeta()
+				bctl.ReadConfig()
 
 				if bctl.Conf.Proxy.BucketUpdateInterval > 0 {
 					bctl.RLock()
@@ -990,9 +963,12 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 				}
 
 			case <-bctl.signals:
+				// reread config and clean back/read-only bucket list
 				bctl.ReadConfig()
-				bctl.ReadAllBucketsMeta()
-				bctl.BucketStatUpdate()
+
+				bctl.Lock()
+				bctl.BackBucket = make([]*Bucket, 0, 10)
+				bctl.Unlock()
 			}
 		}
 	}()
