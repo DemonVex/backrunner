@@ -6,6 +6,12 @@ import (
 	"io/ioutil"
 )
 
+var (
+	BuildDate	string
+	LastCommit	string
+	EllipticsGoLastCommit	string
+)
+
 type Formatter struct {
 	Type string				`json:"type"`
 	Pattern string				`json:"pattern"`
@@ -177,6 +183,12 @@ type ProxyClientConfig struct {
 
 	// Key file for HTTPS server
 	KeyFile string				`json:"key_file"`
+
+	ContentTypes map[string]string		`json:"content-types"`
+
+	// Reader/Writer elliptics IO flags
+	ReaderIOFlags uint32			`json:"reader-io-flags"`
+	WriterIOFlags uint32			`json:"writer-io-flags"`
 }
 
 type ProxyConfig struct {

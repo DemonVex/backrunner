@@ -1,12 +1,14 @@
 package bucket
 
 import (
-	"github.com/DemonVex/backrunner/config"
-	"github.com/DemonVex/backrunner/errors"
-	"github.com/DemonVex/backrunner/etransport"
-	"github.com/DemonVex/backrunner/reply"
-	"github.com/bioothod/elliptics-go/elliptics"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"github.com/bioothod/backrunner/config"
+	"github.com/bioothod/backrunner/errors"
+	"github.com/bioothod/backrunner/etransport"
+	"github.com/bioothod/backrunner/reply"
+	"github.com/bioothod/elliptics-go/elliptics"
 	"io/ioutil"
 	"log"
 	//"math"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
@@ -87,7 +90,11 @@ type BucketCtl struct {
 	BucketTimer		*time.Timer
 	BucketStatTimer		*time.Timer
 
+	// time when previous statistics update has been performed
 	StatTime		time.Time
+
+	// time when backrunner proxy started
+	StartTime		time.Time
 
 	// time when previous defragmentation scan was performed
 	DefragTime		time.Time
@@ -164,9 +171,6 @@ func (bctl *BucketCtl) BucketStatUpdate() (err error) {
 	bctl.Lock()
 	err = bctl.BucketStatUpdateNolock(stat)
 	bctl.Unlock()
-
-	// run defragmentation scan
-	bctl.ScanBuckets()
 
 	return err
 }
@@ -471,6 +475,7 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetTimeout(100)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
 	log.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -584,6 +589,7 @@ func (bctl *BucketCtl) Get(bname, key string, req *http.Request) (resp []byte, e
 
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
 
 	log.Printf("get-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -608,6 +614,21 @@ func (bctl *BucketCtl) Get(bname, key string, req *http.Request) (resp []byte, e
 	return
 }
 
+func (bctl *BucketCtl) SetContentType(key string, w http.ResponseWriter) {
+	bctl.RLock()
+	defer bctl.RUnlock()
+
+	for k, v := range bctl.Conf.Proxy.ContentTypes {
+		if strings.HasSuffix(key, k) {
+			w.Header().Set("Content-Type", v)
+			return
+		}
+	}
+
+	return
+}
+
+
 func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *http.Request) (err error) {
 	bucket, err := bctl.FindBucket(bname)
 	if err != nil {
@@ -622,6 +643,7 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 		return
 	}
 
+	bctl.SetContentType(key, w)
 
 	s, err := bctl.e.DataSession(req)
 	if err != nil {
@@ -633,6 +655,7 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
 
 	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -678,6 +701,7 @@ func (bctl *BucketCtl) Lookup(bname, key string, req *http.Request) (reply *repl
 
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
 
 	log.Printf("lookup-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -711,6 +735,7 @@ func (bctl *BucketCtl) Delete(bname, key string, req *http.Request) (err error) 
 
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
 	log.Printf("delete-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -749,6 +774,7 @@ func (bctl *BucketCtl) BulkDelete(bname string, keys []string, req *http.Request
 
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
+	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
 	log.Printf("bulk-delete-trace-id: %x: url: %s, bucket: %s, keys: %v\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, keys)
@@ -873,15 +899,117 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 
 }
 
-func (bctl *BucketCtl) ReadConfig() error {
-	err := bctl.ReadBucketConfig()
+func (bctl *BucketCtl) UpdateMetadata(key string, jsi interface{}) (err error) {
+	ms, err := bctl.e.MetadataSession()
 	if err != nil {
-		return fmt.Errorf("failed to update bucket config: %v", err)
+		log.Printf("%s: metadata update: could not create metadata session: %v", key, err)
+		return
+	}
+	defer ms.Delete()
+
+	ms.SetNamespace(BucketNamespace)
+
+	type Meta struct {
+		Key string
+		Timestamp int64
+	}
+
+	js := struct {
+		Meta Meta
+		Data interface{}
+	} {
+		Meta {
+			key,
+			time.Now().Unix(),
+		},
+		jsi,
+	}
+
+	data, err := json.MarshalIndent(&js, "", "  ")
+	if err != nil {
+		log.Printf("%s: metadata update: could not pack json: %v: %v", key, js, err)
+		return
+	}
+
+	for wr := range ms.WriteData(key, bytes.NewReader(data), 0, 0) {
+		if wr.Error() != nil {
+			err = wr.Error()
+
+			log.Printf("%s: metadata update: could not write data: %v", key, err)
+		}
+	}
+
+	return
+}
+type BucketCtlStat struct {
+	StartTime	int64
+	StartTimeString	string
+
+	StatTime	int64
+	StatTimeString	string
+
+	CurrentTime	int64
+	CurrentTimeString	string
+
+	BucketNum	int
+	Hostname	string
+	ConfigUpdateInterval	int
+	StatUpdateInterval	int
+	BuildDate	string
+	LastCommit	string
+	EllipticsGoLastCommit	string
+}
+
+func (bctl *BucketCtl) NewBucketCtlStat() (*BucketCtlStat) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Printf("new-bucket-ctl: hostname error: %v", err)
+		hostname = ""
+	}
+
+	ctl := &BucketCtlStat {
+		StartTime:		bctl.StartTime.Unix(),
+		StartTimeString:	bctl.StartTime.String(),
+
+		StatTime:		bctl.StatTime.Unix(),
+		StatTimeString:		bctl.StatTime.String(),
+
+		CurrentTime:		time.Now().Unix(),
+		CurrentTimeString:	time.Now().String(),
+
+		BucketNum:		len(bctl.Bucket),
+		Hostname:		hostname,
+		ConfigUpdateInterval:	bctl.Conf.Proxy.BucketUpdateInterval,
+		StatUpdateInterval:	bctl.Conf.Proxy.BucketStatUpdateInterval,
+		BuildDate:		config.BuildDate,
+		LastCommit:		config.LastCommit,
+		EllipticsGoLastCommit:	config.EllipticsGoLastCommit,
+	}
+
+	return ctl
+}
+
+func (bctl *BucketCtl) ReadConfig() (err error) {
+	err = bctl.ReadBucketConfig()
+	if err != nil {
+		err = fmt.Errorf("read-config: failed to update bucket config: %v", err)
+		log.Printf("%s", err)
+		return
 	}
 
 	err = bctl.ReadProxyConfig()
 	if err != nil {
-		return fmt.Errorf("failed to update proxy config: %v", err)
+		err = fmt.Errorf("read-config: failed to update proxy config: %v", err)
+		log.Printf("%s", err)
+		return
+	}
+
+	ctl := bctl.NewBucketCtlStat()
+
+	err = bctl.UpdateMetadata(fmt.Sprintf("%s.ReadConfig", ctl.Hostname), ctl)
+	if err == nil {
+		log.Printf("read-config: updated metadata: hostname: %s, build-data: %s, last-commit: %s, elliptics-go-last-commit: %s\n",
+			ctl.Hostname, config.BuildDate, config.LastCommit, config.EllipticsGoLastCommit)
 	}
 
 	return nil
@@ -908,6 +1036,26 @@ func (bctl *BucketCtl) ReadBucketsMetaNolock(names []string) (new_buckets []*Buc
 	return
 }
 
+func (bctl *BucketCtl) DumpProfile(add_time bool) {
+	if len(bctl.Conf.Proxy.Root) != 0 {
+		profile := ProfilePath
+		if add_time {
+			profile += "-" + time.Now().Format("2006.01.02-15:04:05.000")
+		}
+
+		p := path.Join(bctl.Conf.Proxy.Root, profile)
+		file, err := os.OpenFile(p, os.O_RDWR | os.O_TRUNC | os.O_CREATE, 0644)
+		if err != nil {
+			log.Printf("dump-profile: failed to open profile '%s': %v", p, err)
+			return
+		}
+		defer file.Close()
+
+		fmt.Fprintf(file, "profile dump: %s\n", time.Now().String())
+		pprof.Lookup("block").WriteTo(file, 2)
+	}
+}
+
 func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path string) (bctl *BucketCtl, err error) {
 	bctl = &BucketCtl {
 		e:			ell,
@@ -922,6 +1070,7 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 		BucketStatTimer:	time.NewTimer(time.Second * 10),
 
 		DefragTime:		time.Now(),
+		StartTime:		time.Now(),
 	}
 
 	runtime.SetBlockProfileRate(1000)
@@ -935,18 +1084,7 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 
 	go func() {
 		for {
-			if len(bctl.Conf.Proxy.Root) != 0 {
-				file, err := os.OpenFile(bctl.Conf.Proxy.Root + "/" + ProfilePath, os.O_RDWR | os.O_TRUNC | os.O_CREATE, 0644)
-				if err != nil {
-					return
-				}
-
-				fmt.Fprintf(file, "profile dump: %s\n", time.Now().String())
-				pprof.Lookup("block").WriteTo(file, 2)
-
-				file.Close()
-			}
-
+			bctl.DumpProfile(false)
 			time.Sleep(30 * time.Second)
 		}
 	}()
@@ -980,6 +1118,15 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 				bctl.BackBucket = make([]*Bucket, 0, 10)
 				bctl.Unlock()
 			}
+		}
+	}()
+
+	go func() {
+		for {
+			// run defragmentation scan
+			bctl.ScanBuckets()
+
+			time.Sleep(31 * time.Second)
 		}
 	}()
 

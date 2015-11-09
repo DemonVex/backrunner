@@ -16,20 +16,38 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+const last_errors_length int = 128
 
 var (
 	proxy bproxy
 )
 
+type ErrorInfo struct {
+	Tsec		int64
+	Tnsec		int
+	Time		string
+	Method		string
+	RemoteAddr	string
+	URL		string
+	Error		string
+	Status		int
+}
+
 type bproxy struct {
 	bctl		*bucket.BucketCtl
 	ell		*etransport.Elliptics
+
+	error_index	uint64
+	last_errors	[]ErrorInfo
 }
 
 type Reply struct {
@@ -50,6 +68,22 @@ func GoodReplyLength(length uint64) Reply {
 		err: nil,
 		status: http.StatusOK,
 		length: length,
+	}
+}
+
+func (p *bproxy) add_error(method, addr, url string, status int, err string) {
+	idx := (atomic.AddUint64(&p.error_index, 1) - 1) % uint64(len(p.last_errors))
+	t := time.Now()
+	p.last_errors[idx] = ErrorInfo {
+		Tsec:		t.Unix(),
+		Tnsec:		t.Nanosecond(),
+		Time:		t.String(),
+
+		Method:		method,
+		RemoteAddr:	addr,
+		URL:		url,
+		Error:		err,
+		Status:		status,
 	}
 }
 
@@ -393,6 +427,12 @@ func common_handler(w http.ResponseWriter, req *http.Request, strings ...string)
 	return GoodReplyLength(uint64(len(data)))
 }
 
+func exit_handler(w http.ResponseWriter, req *http.Request, strings ...string) Reply {
+	proxy.bctl.DumpProfile(true)
+	os.Exit(-1)
+	return GoodReply()
+}
+
 func stat_handler(w http.ResponseWriter, req *http.Request, strings ...string) Reply {
 	reply, err := proxy.bctl.Stat(req)
 	if err != nil {
@@ -418,36 +458,37 @@ func stat_handler(w http.ResponseWriter, req *http.Request, strings ...string) R
 	return GoodReply()
 }
 
-type Metric struct {
-	BPS		uint64			`json:"bps"`
-	RPS		map[string]uint64	`json:"rps"`
-}
-
-type proxy_stat_reply struct {
-	Handlers	map[string]Metric	`json:"handlers"`
-}
 
 // this uglymoron is needed to prevent Golang initialization loop logic from exploding
 var estimator_scan_handlers map[string]*handler
 
+type proxy_stat_reply struct {
+	BucketCtlStat	*bucket.BucketCtlStat
+	Handlers	map[string]*handler	`json:"handlers"`
+	Errors		[]ErrorInfo		`json:"errors"`
+}
+
 func proxy_stat_handler(w http.ResponseWriter, req *http.Request, strings ...string) Reply {
-	res := proxy_stat_reply {
-		Handlers: make(map[string]Metric),
+	start_idx := proxy.error_index
+	l := uint64(len(proxy.last_errors))
+	if start_idx < uint64(len(proxy.last_errors)) {
+		l = start_idx
 	}
 
-	for name, h := range estimator_scan_handlers {
-		c := h.e.Read()
+	res := proxy_stat_reply {
+		BucketCtlStat:	proxy.bctl.NewBucketCtlStat(),
+		Handlers:	estimator_scan_handlers,
+		Errors:		make([]ErrorInfo, l),
+	}
 
-		m := Metric {
-			BPS:		c.BPS,
-			RPS:		make(map[string]uint64),
+	if start_idx <= uint64(len(proxy.last_errors)) {
+		copy(res.Errors, proxy.last_errors)
+	} else {
+		var i uint64
+		for i = 0; i < uint64(len(proxy.last_errors)); i++ {
+			idx := (i + start_idx + 1) % uint64(len(proxy.last_errors))
+			res.Errors[i] = proxy.last_errors[idx]
 		}
-
-		for k, v := range c.RPS {
-			m.RPS[fmt.Sprintf("%d", k)] = v
-		}
-
-		res.Handlers[name] = m
 	}
 
 	reply_json, err := json.Marshal(&res)
@@ -467,68 +508,78 @@ func proxy_stat_handler(w http.ResponseWriter, req *http.Request, strings ...str
 }
 
 type handler struct {
-	params			int		// minimal number of path components after /handler/ needed to run this handler
-	methods			[]string	// GET, POST and so on - methods which are allowed to be used with this handler
-	function		func(w http.ResponseWriter, req *http.Request, v...string) Reply
+	// minimal number of path components after /handler/ needed to run this handler
+	Params			int				`json:"-"`
 
-	e			*estimator.Estimator
+	// GET, POST and so on - Methods which are allowed to be used with this handler
+	Methods			[]string			`json:"-"`
+
+	// handler Function
+	Function		func(w http.ResponseWriter, req *http.Request, v...string) Reply		`json:"-"`
+
+	Estimator		*estimator.Estimator		`json:"RS"`
 }
 
 var proxy_handlers = map[string]*handler {
 	"nobucket_upload": &handler{
-		params:	1,
-		methods: []string{"POST", "PUT"},
-		function: nobucket_upload_handler,
+		Params:	1,
+		Methods: []string{"POST", "PUT"},
+		Function: nobucket_upload_handler,
 	},
 	"upload": &handler{
-		params: 2,
-		methods: []string{"POST", "PUT"},
-		function: bucket_upload_handler,
+		Params: 2,
+		Methods: []string{"POST", "PUT"},
+		Function: bucket_upload_handler,
 	},
 	"get": &handler{
-		params: 2,
-		methods: []string{"GET"},
-		function: get_handler,
+		Params: 2,
+		Methods: []string{"GET"},
+		Function: get_handler,
 	},
 	"lookup": &handler{
-		params: 2,
-		methods: []string{"GET"},
-		function: lookup_handler,
+		Params: 2,
+		Methods: []string{"GET"},
+		Function: lookup_handler,
 	},
 	"redirect": &handler{
-		params: 2,
-		methods: []string{"GET"},
-		function: redirect_handler,
+		Params: 2,
+		Methods: []string{"GET"},
+		Function: redirect_handler,
 	},
 	"delete": &handler{
-		params: 2,
-		methods: []string{"POST", "PUT"},
-		function: delete_handler,
+		Params: 2,
+		Methods: []string{"POST", "PUT"},
+		Function: delete_handler,
 	},
 	"bulk_delete": &handler{
-		params: 1,
-		methods: []string{"POST", "PUT"},
-		function: bulk_delete_handler,
+		Params: 1,
+		Methods: []string{"POST", "PUT"},
+		Function: bulk_delete_handler,
 	},
 	"ping": &handler{
-		params: 0,
-		methods: []string{"GET"},
-		function: stat_handler,
+		Params: 0,
+		Methods: []string{"GET"},
+		Function: stat_handler,
 	},
 	"stat": &handler{
-		params: 0,
-		methods: []string{"GET"},
-		function: stat_handler,
+		Params: 0,
+		Methods: []string{"GET"},
+		Function: stat_handler,
 	},
 	"proxy_stat": &handler{
-		params: 0,
-		methods: []string{"GET"},
-		function: proxy_stat_handler,
+		Params: 0,
+		Methods: []string{"GET"},
+		Function: proxy_stat_handler,
 	},
 	"/": &handler{
-		params: 0,
-		methods: []string{"GET"},
-		function: common_handler,
+		Params: 0,
+		Methods: []string{"GET"},
+		Function: common_handler,
+	},
+	"exit": &handler{
+		Params:	0,
+		Methods: []string{"GET"},
+		Function: exit_handler,
 	},
 }
 
@@ -552,9 +603,11 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 
 	start := time.Now()
 
+	proxy.bctl.RLock()
 	for k, v := range proxy.bctl.Conf.Proxy.Headers {
 		w.Header().Set(k, v)
 	}
+	proxy.bctl.RUnlock()
 
 	content_length := get_content_length(req.Header)
 
@@ -593,16 +646,16 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 				if len(hstrings) != 3 {
 					reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
 						fmt.Sprintf("not enough path parts for handler: %v, must be at least: %d",
-							len(hstrings) - 1, h.params + 1))
+							len(hstrings) - 1, h.Params + 1))
 					ok = false
 				} else {
-					param_strings = strings.SplitN(hstrings[2], "/", h.params)
-					if len(param_strings) < h.params {
+					param_strings = strings.SplitN(hstrings[2], "/", h.Params)
+					if len(param_strings) < h.Params {
 						reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
 							fmt.Sprintf("not enough path parameters for handler: %v, must be at least: %d",
-								len(param_strings), h.params))
+								len(param_strings), h.Params))
 						ok = false
-					} else if h.params > 0 && len(param_strings[h.params - 1]) == 0 {
+					} else if h.Params > 0 && len(param_strings[h.Params - 1]) == 0 {
 						reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
 							fmt.Sprintf("last path parameter can not be empty"))
 						ok = false
@@ -612,7 +665,7 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 
 			if ok {
 				method_matched := false
-				for _, method := range h.methods {
+				for _, method := range h.Methods {
 					if method == req.Method {
 						method_matched = true
 						break
@@ -620,11 +673,11 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 				}
 
 				if method_matched {
-					reply = h.function(w, req, param_strings...)
+					reply = h.Function(w, req, param_strings...)
 				} else {
 					reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
 						fmt.Sprintf("method doesn't match: provided: %s, required: %v",
-							req.Method, h.methods))
+							req.Method, h.Methods))
 				}
 			}
 		}
@@ -633,6 +686,7 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 	msg := "OK"
 	if reply.err != nil {
 		msg = reply.err.Error()
+		proxy.add_error(req.Method, req.RemoteAddr, req.URL.RequestURI(), reply.status, msg)
 	}
 
 	if content_length == 0 {
@@ -644,7 +698,7 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 
 	duration := time.Since(start)
 	if h != nil {
-		h.e.Push(content_length, reply.status)
+		h.Estimator.Push(content_length, reply.status)
 	}
 
 	log.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
@@ -696,7 +750,7 @@ func main() {
 	}
 
 	for _, h := range proxy_handlers {
-		h.e = estimator.NewEstimator()
+		h.Estimator = estimator.NewEstimator()
 	}
 	estimator_scan_handlers = proxy_handlers
 
@@ -716,6 +770,8 @@ func main() {
 		log.Printf("redirect is not allowed because of invalid redirect port %d",
 			conf.Proxy.RedirectPort)
 	}
+
+	proxy.last_errors = make([]ErrorInfo, last_errors_length, last_errors_length)
 
 	proxy.ell, err = etransport.NewEllipticsTransport(conf)
 	if err != nil {

@@ -1,75 +1,67 @@
 package estimator
 
 import (
+	"encoding/json"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 )
 
-const EstimatorInterval time.Duration = 5 * time.Second
+const EstimatorRange int = 3
 
-type Stat struct {
-	UpdateTime	time.Time
+func MovingExpAvg(value, oldValue, fdtime, ftime float64) float64 {
+	alpha := 1.0 - math.Exp(-fdtime/ftime)
+	r := alpha * value + (1.0 - alpha) * oldValue
+	return r
+}
+
+type Second struct {
+	Second		int
 	BPS		uint64
-	RPS		map[int]uint64
+	RPS		uint64
 }
 
-func (src *Stat) CopyInto(dst *Stat) {
-	dst.UpdateTime = src.UpdateTime
+type RequestStat struct {
+	SStat		[]Second		`json:"-"`
+	BPS		float64
+	RPS		float64
+}
 
-	dst.BPS = src.BPS
-	for k, v := range src.RPS {
-		dst.RPS[k] = v
+func NewRequestStat() *RequestStat {
+	return &RequestStat {
+		BPS:		0,
+		RPS:		0,
+		SStat:		make([]Second, EstimatorRange),
 	}
 }
 
-func (s *Stat) Clear() {
-	s.BPS = 0
-	s.UpdateTime = time.Now().Add(EstimatorInterval)
-	s.RPS = make(map[int]uint64)
-}
+func (r *RequestStat) Copy(start int) {
+	for i := 0; i < EstimatorRange; i++ {
+		idx := start - i - 1
+		if idx < 0 {
+			idx = EstimatorRange - i - 1
+		}
 
-func (s *Stat) Adjust(tm time.Time) {
-	d := tm.Sub(s.UpdateTime).Seconds() + EstimatorInterval.Seconds()
-	s.BPS = uint64(float64(s.BPS) / d)
-	for k, v := range s.RPS {
-		s.RPS[k] = uint64(float64(v) / d)
+		s := r.SStat[idx]
+		r.RPS = MovingExpAvg(float64(s.RPS), r.RPS, float64(EstimatorRange - i), float64(EstimatorRange))
+		r.BPS = MovingExpAvg(float64(s.BPS), r.BPS, float64(EstimatorRange - i), float64(EstimatorRange))
 	}
 }
-
 
 type Estimator struct {
-	sync.RWMutex
+	sync.Mutex
 
-
-	Cache		Stat
-	Current		Stat
+	RS		map[int]*RequestStat
 }
 
 func NewEstimator() *Estimator {
-	e := &Estimator {
-	}
-
-	e.Cache.Clear()
-	e.Current.Clear()
-
-	return e
-}
-
-func (e *Estimator) UpdateCache() {
-	tm := time.Now()
-
-	if tm.After(e.Current.UpdateTime) {
-		e.Current.CopyInto(&e.Cache)
-		e.Cache.Adjust(tm)
-
-		e.Current.Clear()
+	return &Estimator {
+		RS:	make(map[int]*RequestStat),
 	}
 }
 
-func (e *Estimator) Push(size uint64, status int) {
-	e.Lock()
-	defer e.Unlock()
-
+func (e *Estimator) PushNolock(requests, size uint64, status int) {
 	switch {
 	case status >= 200 && status < 300:
 		status = 200
@@ -81,23 +73,51 @@ func (e *Estimator) Push(size uint64, status int) {
 		status = 500
 	}
 
-	e.UpdateCache()
-
-	e.Current.RPS[status] += 1
-	if (uint64(size) > 0) {
-		e.Current.BPS += size
+	rs, ok := e.RS[status]
+	if !ok {
+		rs = NewRequestStat()
+		e.RS[status] = rs
 	}
+
+	second := time.Now().Second()
+
+	idx := second % EstimatorRange
+	ss := &rs.SStat[idx]
+
+	if ss.Second != second {
+		ss.Second = second
+		ss.RPS = 0
+		ss.BPS = 0
+	}
+
+	ss.RPS += requests
+	ss.BPS += size
 }
 
-func (e *Estimator) Read() *Stat {
-	e.RLock()
-	defer e.RUnlock()
+func (e *Estimator) Push(size uint64, status int) {
+	e.Lock()
+	defer e.Unlock()
 
-	e.UpdateCache()
+	e.PushNolock(1, size, status)
+}
 
-	res := &Stat {}
-	res.Clear()
+func (e *Estimator) MarshalJSON() ([]byte, error) {
+	second := time.Now().Second()
+	idx := second % EstimatorRange
 
-	e.Cache.CopyInto(res)
-	return res
+	res := make(map[string]RequestStat)
+
+	e.Lock()
+	for k, v := range e.RS {
+		e.PushNolock(0, 0, k)
+
+		v.Copy(idx)
+
+		if v.RPS > 0.1 {
+			res[strconv.Itoa(k)] = *v
+		}
+	}
+	e.Unlock()
+
+	return json.Marshal(res)
 }
