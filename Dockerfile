@@ -1,17 +1,17 @@
 FROM ubuntu:trusty
 
 RUN apt-get update && apt-get -y upgrade && \
-	apt-get install -y curl git g++ && \
+	apt-get install -y curl git g++ make && \
 	curl http://repo.reverbrain.com/REVERBRAIN.GPG | apt-key add - && \
 	echo "deb http://repo.reverbrain.com/trusty/ current/amd64/" > /etc/apt/sources.list.d/reverbrain.list && \
 	echo "deb http://repo.reverbrain.com/trusty/ current/all/" >> /etc/apt/sources.list.d/reverbrain.list && \
 	apt-get update && \
-	apt-get install -y elliptics elliptics-dev && \
+	apt-get install -y elliptics-client elliptics-dev && \
 	rm -rf /var/lib/apt/lists/*
 
 RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	export GOPATH=/root/go && \
-	VERSION=go1.3.3 && \
+	VERSION=go1.5.1 && \
 	curl -f -I https://storage.googleapis.com/golang/$VERSION.linux-amd64.tar.gz && \
 	test `go version | awk {'print $3'}` = $VERSION || \
 	echo "Downloading" && \
@@ -34,4 +34,4 @@ RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	go get && go install && \
 	echo "Backrunner has been updated";
 
-EXPOSE 9090 8080
+EXPOSE 9090 8080 443
