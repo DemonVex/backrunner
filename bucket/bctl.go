@@ -500,11 +500,12 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 	time_us := time.Since(start).Nanoseconds() / 1000
 	e := float64(time_us) / float64(total_size)
+	str := make([]string, 0)
+
 	func() {
 		bctl.RLock()
 		defer bctl.RUnlock()
 
-		str := make([]string, 0)
 		for _, res := range reply.Servers {
 			sg, ok := bucket.Group[res.Group]
 			if ok {
