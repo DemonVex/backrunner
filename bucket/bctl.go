@@ -135,10 +135,12 @@ func (bctl *BucketCtl) FindBucket(name string) (bucket *Bucket, err error) {
 			return nil, fmt.Errorf("%s: could not find and read bucket: %v", name, err.Error())
 		}
 
-		bctl.Lock()
-		bctl.BackBucket = append(bctl.BackBucket, b)
-		bucket = b
-		bctl.Unlock()
+		func () {
+			bctl.Lock()
+			defer bctl.Unlock()
+			bctl.BackBucket = append(bctl.BackBucket, b)
+			bucket = b
+		}()
 	}
 
 	return bucket, nil
@@ -169,8 +171,8 @@ func (bctl *BucketCtl) BucketStatUpdate() (err error) {
 	}
 
 	bctl.Lock()
+	defer bctl.Unlock()
 	err = bctl.BucketStatUpdateNolock(stat)
-	bctl.Unlock()
 
 	return err
 }
@@ -198,159 +200,159 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	defer s.Delete()
 
 	type bucket_stat struct {
-		Bucket		*Bucket
-		SuccessGroups	[]uint32
-		ErrorGroups	[]uint32
-		Pain		float64
-		Range		float64
+		Bucket        *Bucket
+		SuccessGroups []uint32
+		ErrorGroups   []uint32
+		Pain          float64
+		Range         float64
 
-		pains		[]float64
-		free_rates	[]float64
+		pains         []float64
+		free_rates    []float64
 
-		abs		[]string
+		abs           []string
 	}
 
 	stat := make([]*bucket_stat, 0)
 	failed := make([]*bucket_stat, 0)
+	func() {
+		bctl.RLock()
+		defer bctl.RUnlock()
 
-	bctl.RLock()
+		for _, b := range bctl.Bucket {
+			bs := &bucket_stat{
+				Bucket:        b,
+				SuccessGroups:    make([]uint32, 0),
+				ErrorGroups:    make([]uint32, 0),
+				Pain:        0.0,
+				Range:        0.0,
 
-	for _, b := range bctl.Bucket {
-		bs := &bucket_stat {
-			Bucket:		b,
-			SuccessGroups:	make([]uint32, 0),
-			ErrorGroups:	make([]uint32, 0),
-			Pain:		0.0,
-			Range:		0.0,
+				pains:        make([]float64, 0, len(b.Group)),
+				free_rates:    make([]float64, 0, len(b.Group)),
 
-			pains:		make([]float64, 0, len(b.Group)),
-			free_rates:	make([]float64, 0, len(b.Group)),
-
-		}
-
-		s.SetNamespace(b.Name)
-
-		for group_id, sg := range b.Group {
-			st, err := sg.FindStatBackendKey(s, key, group_id)
-			if err != nil {
-				// there is no statistics for given address+backend, which should host our data
-				// do not allow to write into the bucket which contains given address+backend
-
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				bs.Pain += PainNoStats
-				continue
 			}
 
-			bs.abs = append(bs.abs, st.Ab.String())
+			s.SetNamespace(b.Name)
 
-			if st.RO {
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+			for group_id, sg := range b.Group {
+				st, err := sg.FindStatBackendKey(s, key, group_id)
+				if err != nil {
+					// there is no statistics for given address+backend, which should host our data
+					// do not allow to write into the bucket which contains given address+backend
 
-				bs.Pain += PainStatRO
-				continue
-			}
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
-			if st.Error.Code != 0 {
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				bs.Pain += PainStatError
-				continue
-			}
-
-			// this is an empty stat structure
-			if st.VFS.TotalSizeLimit == 0 || st.VFS.Total  == 0 {
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				bs.Pain += PainNoStats
-				continue
-			}
-
-			free_space_rate := FreeSpaceRatio(st, uint64(req.ContentLength))
-			if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioHard {
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				bs.Pain += PainNoFreeSpaceHard
-			} else if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioSoft {
-				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
-
-				free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioHard)
-				bs.Pain += PainNoFreeSpaceSoft + free_space_pain * 5
-			} else {
-				bs.SuccessGroups = append(bs.SuccessGroups, group_id)
-
-				free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioSoft)
-				if free_space_pain >= PainNoFreeSpaceSoft {
-					free_space_pain = PainNoFreeSpaceSoft * 0.8
+					bs.Pain += PainNoStats
+					continue
 				}
 
-				bs.Pain += free_space_pain
+				bs.abs = append(bs.abs, st.Ab.String())
+
+				if st.RO {
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+					bs.Pain += PainStatRO
+					continue
+				}
+
+				if st.Error.Code != 0 {
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+					bs.Pain += PainStatError
+					continue
+				}
+
+				// this is an empty stat structure
+				if st.VFS.TotalSizeLimit == 0 || st.VFS.Total == 0 {
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+					bs.Pain += PainNoStats
+					continue
+				}
+
+				free_space_rate := FreeSpaceRatio(st, uint64(req.ContentLength))
+				if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioHard {
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+					bs.Pain += PainNoFreeSpaceHard
+				} else if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioSoft {
+					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+
+					free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioHard)
+					bs.Pain += PainNoFreeSpaceSoft + free_space_pain * 5
+				} else {
+					bs.SuccessGroups = append(bs.SuccessGroups, group_id)
+
+					free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioSoft)
+					if free_space_pain >= PainNoFreeSpaceSoft {
+						free_space_pain = PainNoFreeSpaceSoft * 0.8
+					}
+
+					bs.Pain += free_space_pain
+				}
+
+				pp := st.PIDPain()
+
+				bs.Pain += pp
+				bs.pains = append(bs.pains, pp)
+				bs.free_rates = append(bs.free_rates, free_space_rate)
 			}
 
-			pp := st.PIDPain()
-
-			bs.Pain += pp
-			bs.pains = append(bs.pains, pp)
-			bs.free_rates = append(bs.free_rates, free_space_rate)
-		}
-
-		total_groups := len(bs.SuccessGroups) + len(bs.ErrorGroups)
-		diff := 0
-		if len(b.Meta.Groups) > total_groups {
-			diff += len(b.Meta.Groups) - total_groups
-		}
-
-		bs.Pain += float64(diff) * PainNoGroup
-
-		// calculate discrepancy pain:
-		// run over all address+backends in every group in given bucket,
-		// sum up number of live records
-		// set discrepancy as a maximum difference between number of records among all groups
-		var min_records uint64 = 1<<31-1
-		var max_records uint64 = 0
-
-		records := make([]uint64, 0)
-		for _, sg := range b.Group {
-			var r uint64 = 0
-
-			for _, sb := range sg.Ab {
-				r += sb.VFS.RecordsTotal - sb.VFS.RecordsRemoved
+			total_groups := len(bs.SuccessGroups) + len(bs.ErrorGroups)
+			diff := 0
+			if len(b.Meta.Groups) > total_groups {
+				diff += len(b.Meta.Groups) - total_groups
 			}
 
-			records = append(records, r)
-		}
+			bs.Pain += float64(diff) * PainNoGroup
 
-		for _, r := range records {
-			if r < min_records {
-				min_records = r
+			// calculate discrepancy pain:
+			// run over all address+backends in every group in given bucket,
+			// sum up number of live records
+			// set discrepancy as a maximum difference between number of records among all groups
+			var min_records uint64 = 1 << 31 - 1
+			var max_records uint64 = 0
+
+			records := make([]uint64, 0)
+			for _, sg := range b.Group {
+				var r uint64 = 0
+
+				for _, sb := range sg.Ab {
+					r += sb.VFS.RecordsTotal - sb.VFS.RecordsRemoved
+				}
+
+				records = append(records, r)
 			}
 
-			if r > max_records {
-				max_records = r
+			for _, r := range records {
+				if r < min_records {
+					min_records = r
+				}
+
+				if r > max_records {
+					max_records = r
+				}
 			}
+			bs.Pain += float64(max_records - min_records) * PainDiscrepancy
+
+
+			// do not even consider buckets without free space even in one group
+			if bs.Pain >= PainNoFreeSpaceHard {
+				//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
+				//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
+				//	bs.pains, bs.free_rates)
+				failed = append(failed, bs)
+				continue
+			}
+
+			if bs.Pain != 0 {
+				bs.Range = 1.0 / bs.Pain
+			} else {
+				bs.Range = 1.0
+			}
+
+			stat = append(stat, bs)
 		}
-		bs.Pain += float64(max_records - min_records) * PainDiscrepancy
-
-
-		// do not even consider buckets without free space even in one group
-		if bs.Pain >= PainNoFreeSpaceHard {
-			//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
-			//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
-			//	bs.pains, bs.free_rates)
-			failed = append(failed, bs)
-			continue
-		}
-
-		if bs.Pain != 0 {
-			bs.Range = 1.0 / bs.Pain
-		} else {
-			bs.Range = 1.0
-		}
-
-		stat = append(stat, bs)
-	}
-
-	bctl.RUnlock()
+	} ()
 
 	// there are no buckets suitable for this request
 	// either there is no space in either bucket, or there are no buckets at all
@@ -498,44 +500,45 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 	time_us := time.Since(start).Nanoseconds() / 1000
 	e := float64(time_us) / float64(total_size)
+	func() {
+		bctl.RLock()
+		defer bctl.RUnlock()
 
-	bctl.RLock()
+		str := make([]string, 0)
+		for _, res := range reply.Servers {
+			sg, ok := bucket.Group[res.Group]
+			if ok {
+				st, back_err := sg.FindStatBackend(res.Addr, res.Backend)
+				if back_err == nil {
+					old_pain := st.PIDPain()
+					update_pain := e
+					estring := "ok"
 
-	str := make([]string, 0)
-	for _, res := range reply.Servers {
-		sg, ok := bucket.Group[res.Group]
-		if ok {
-			st, back_err := sg.FindStatBackend(res.Addr, res.Backend)
-			if back_err == nil {
-				old_pain := st.PIDPain()
-				update_pain := e
-				estring := "ok"
+					if res.Error != nil {
+						update_pain = BucketWriteErrorPain
+						estring = res.Error.Error()
+					}
+					st.PIDUpdate(update_pain)
 
-				if res.Error != nil {
-					update_pain = BucketWriteErrorPain
-					estring = res.Error.Error()
+					str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: %v, pain: %f -> %f}",
+						res.Group, time_us, e, estring, old_pain, st.PIDPain()))
+				} else {
+					str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no backend stat}",
+						res.Group, time_us, e))
 				}
-				st.PIDUpdate(update_pain)
-
-				str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: %v, pain: %f -> %f}",
-					res.Group, time_us, e, estring, old_pain, st.PIDPain()))
 			} else {
-				str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no backend stat}",
+				str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no group stat}",
 					res.Group, time_us, e))
 			}
-		} else {
-			str = append(str, fmt.Sprintf("{group: %d, time: %d us, e: %f, error: no group stat}",
-				res.Group, time_us, e))
 		}
-	}
 
-	if len(reply.SuccessGroups) == 0 {
-		for _, group_id := range bucket.Meta.Groups {
-			str = append(str, fmt.Sprintf("{error-group: %d, time: %d us}", group_id, time_us))
+		if len(reply.SuccessGroups) == 0 {
+			for _, group_id := range bucket.Meta.Groups {
+				str = append(str, fmt.Sprintf("{error-group: %d, time: %d us}", group_id, time_us))
+			}
 		}
-	}
 
-	bctl.RUnlock()
+	}()
 
 	log.Printf("bucket-upload: bucket: %s, key: %s, size: %d: %v\n", bucket.Name, key, total_size, str)
 
@@ -861,10 +864,12 @@ func (bctl *BucketCtl) ReadBucketConfig() error {
 		return err
 	}
 
-	bctl.Lock()
-	bctl.Bucket = new_buckets
-	err = bctl.BucketStatUpdateNolock(stat)
-	bctl.Unlock()
+	func() {
+		bctl.Lock()
+		defer bctl.Unlock()
+		bctl.Bucket = new_buckets
+		err = bctl.BucketStatUpdateNolock(stat)
+	}()
 
 	log.Printf("Bucket config has been updated, there are %d writable buckets\n", len(new_buckets))
 	return nil
@@ -877,9 +882,11 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 		return fmt.Errorf("could not load proxy config file '%s': %v", bctl.proxy_config_path, err)
 	}
 
-	bctl.Lock()
-	bctl.Conf = conf
-	bctl.Unlock()
+	func () {
+		bctl.Lock()
+		defer bctl.Unlock()
+		bctl.Conf = conf
+	}()
 
 	if bctl.e.LogFile != nil {
 		bctl.e.LogFile.Close()
@@ -1096,27 +1103,32 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 				bctl.ReadConfig()
 
 				if bctl.Conf.Proxy.BucketUpdateInterval > 0 {
-					bctl.RLock()
-					bctl.BucketTimer.Reset(time.Second * time.Duration(bctl.Conf.Proxy.BucketUpdateInterval))
-					bctl.RUnlock()
+					func() {
+						bctl.RLock()
+						defer bctl.RUnlock()
+						bctl.BucketTimer.Reset(time.Second * time.Duration(bctl.Conf.Proxy.BucketUpdateInterval))
+					}()
 				}
 
 			case <-bctl.BucketStatTimer.C:
 				bctl.BucketStatUpdate()
 
 				if bctl.Conf.Proxy.BucketStatUpdateInterval > 0 {
-					bctl.RLock()
-					bctl.BucketStatTimer.Reset(time.Second * time.Duration(bctl.Conf.Proxy.BucketStatUpdateInterval))
-					bctl.RUnlock()
+					func() {
+						bctl.RLock()
+						defer bctl.RUnlock()
+						bctl.BucketStatTimer.Reset(time.Second * time.Duration(bctl.Conf.Proxy.BucketStatUpdateInterval))
+					}()
 				}
 
 			case <-bctl.signals:
 				// reread config and clean back/read-only bucket list
 				bctl.ReadConfig()
-
-				bctl.Lock()
-				bctl.BackBucket = make([]*Bucket, 0, 10)
-				bctl.Unlock()
+				func() {
+					bctl.Lock()
+					defer bctl.Unlock()
+					bctl.BackBucket = make([]*Bucket, 0, 10)
+				}()
 			}
 		}
 	}()
