@@ -9,6 +9,7 @@ import (
 	"github.com/DemonVex/backrunner/etransport"
 	"github.com/DemonVex/backrunner/reply"
 	"github.com/bioothod/elliptics-go/elliptics"
+	"io"
 	"io/ioutil"
 	"log"
 	//"math"
@@ -95,6 +96,9 @@ type BucketCtl struct {
 
 	// time when backrunner proxy started
 	StartTime		time.Time
+
+	// time when the last time config update was done
+	ConfigTime		time.Time
 
 	// time when previous defragmentation scan was performed
 	DefragTime		time.Time
@@ -591,6 +595,7 @@ func (bctl *BucketCtl) Get(bname, key string, req *http.Request) (resp []byte, e
 	}
 	defer s.Delete()
 
+	s.SetFilter(elliptics.SessionFilterAll)
 	s.SetNamespace(bucket.Name)
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
@@ -632,6 +637,48 @@ func (bctl *BucketCtl) SetContentType(key string, w http.ResponseWriter) {
 	return
 }
 
+func (bctl *BucketCtl) SetGroupsTimeout(s *elliptics.Session, bucket *Bucket, key string) {
+	// sort groups by defrag state, increase timeout if needed
+
+	groups := make([]uint32, 0)
+	defrag_groups := make([]uint32, 0)
+	timeout := 30
+
+	for group_id, sg := range bucket.Group {
+		sb, err := sg.FindStatBackendKey(s, key, group_id)
+		if err != nil {
+			continue
+		}
+
+		if sb.DefragState != 0 {
+			defrag_groups = append(defrag_groups, group_id)
+		} else {
+			groups = append(groups, group_id)
+		}
+	}
+
+	// Not being defragmented backends first, then those which are currently being defragmented
+	groups = append(groups, defrag_groups...)
+	if len(groups) == len(defrag_groups) {
+		timeout = 90
+	}
+
+	// if there are no backends being defragmented, use weights to mix read states
+	// if there are such backends, use strict order and read from non-defragmented backends first
+	ioflags := elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags) | s.GetIOflags()
+	if len(defrag_groups) == 0 {
+		ioflags |= elliptics.DNET_IO_FLAGS_MIX_STATES
+	}
+	s.SetIOflags(ioflags)
+
+	// there are no stats for bucket groups, use what we have in metadata
+	if len(groups) == 0 {
+		groups = bucket.Meta.Groups
+	}
+
+	s.SetGroups(groups)
+	s.SetTimeout(timeout)
+}
 
 func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *http.Request) (err error) {
 	bucket, err := bctl.FindBucket(bname)
@@ -657,9 +704,9 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 	}
 	defer s.Delete()
 
+	s.SetFilter(elliptics.SessionFilterAll)
 	s.SetNamespace(bucket.Name)
-	s.SetGroups(bucket.Meta.Groups)
-	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
+	bctl.SetGroupsTimeout(s, bucket, key)
 
 	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
@@ -950,21 +997,24 @@ func (bctl *BucketCtl) UpdateMetadata(key string, jsi interface{}) (err error) {
 	return
 }
 type BucketCtlStat struct {
-	StartTime	int64
-	StartTimeString	string
+	StartTime		int64
+	StartTimeString		string
 
-	StatTime	int64
-	StatTimeString	string
+	StatTime		int64
+	StatTimeString		string
 
-	CurrentTime	int64
+	ConfigTime		int64
+	ConfigTimeString	string
+
+	CurrentTime		int64
 	CurrentTimeString	string
 
-	BucketNum	int
-	Hostname	string
+	BucketNum		int
+	Hostname		string
 	ConfigUpdateInterval	int
 	StatUpdateInterval	int
-	BuildDate	string
-	LastCommit	string
+	BuildDate		string
+	LastCommit		string
 	EllipticsGoLastCommit	string
 }
 
@@ -981,6 +1031,9 @@ func (bctl *BucketCtl) NewBucketCtlStat() (*BucketCtlStat) {
 
 		StatTime:		bctl.StatTime.Unix(),
 		StatTimeString:		bctl.StatTime.String(),
+
+		ConfigTime:		bctl.ConfigTime.Unix(),
+		ConfigTimeString:	bctl.ConfigTime.String(),
 
 		CurrentTime:		time.Now().Unix(),
 		CurrentTimeString:	time.Now().String(),
@@ -1011,6 +1064,8 @@ func (bctl *BucketCtl) ReadConfig() (err error) {
 		log.Printf("%s", err)
 		return
 	}
+
+	bctl.ConfigTime = time.Now()
 
 	ctl := bctl.NewBucketCtlStat()
 
@@ -1044,7 +1099,7 @@ func (bctl *BucketCtl) ReadBucketsMetaNolock(names []string) (new_buckets []*Buc
 	return
 }
 
-func (bctl *BucketCtl) DumpProfile(add_time bool) {
+func (bctl *BucketCtl) DumpProfileFile(add_time bool) {
 	if len(bctl.Conf.Proxy.Root) != 0 {
 		profile := ProfilePath
 		if add_time {
@@ -1059,9 +1114,19 @@ func (bctl *BucketCtl) DumpProfile(add_time bool) {
 		}
 		defer file.Close()
 
-		fmt.Fprintf(file, "profile dump: %s\n", time.Now().String())
-		pprof.Lookup("block").WriteTo(file, 2)
+		bctl.DumpProfile(file)
 	}
+}
+
+func (bctl *BucketCtl) DumpProfileSingle(out io.Writer, name string) {
+	fmt.Fprintf(out, "\n\n===========================  %s dump: %s\n", name, time.Now().String())
+	pprof.Lookup(name).WriteTo(out, 2)
+}
+
+func (bctl *BucketCtl) DumpProfile(out io.Writer) {
+	bctl.DumpProfileSingle(out, "goroutine")
+	bctl.DumpProfileSingle(out, "heap")
+	bctl.DumpProfileSingle(out, "threadcreate")
 }
 
 func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path string) (bctl *BucketCtl, err error) {
@@ -1092,7 +1157,7 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 
 	go func() {
 		for {
-			bctl.DumpProfile(false)
+			bctl.DumpProfileFile(false)
 			time.Sleep(30 * time.Second)
 		}
 	}()
