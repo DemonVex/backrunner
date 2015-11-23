@@ -1,7 +1,7 @@
 package bucket
 
 import (
-	"github.com/bioothod/elliptics-go/elliptics"
+	"github.com/DemonVex/elliptics-go/elliptics"
 	"log"
 	"sort"
 	"time"

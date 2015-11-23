@@ -22,13 +22,12 @@ RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	
 RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	export GOPATH=/root/go && \
-	mkdir -p /root/go/src/github.com/bioothod && \
-	cd /root/go/src/github.com/bioothod && \
-	git clone https://github.com/bioothod/elliptics-go.git && \
-	cd /root/go/src/github.com/bioothod/elliptics-go/elliptics && \
+	mkdir -p /root/go/src/github.com/DemonVex && \
+	cd /root/go/src/github.com/DemonVex && \
+	git clone https://github.com/DemonVex/elliptics-go.git && \
+	cd /root/go/src/github.com/DemonVex/elliptics-go/elliptics && \
 	go install && \
 	echo "Go binding has been updated" && \
-	mkdir -p /root/go/src/github.com/DemonVex && \
 	cd /root/go/src/github.com/DemonVex && \
 	git clone https://github.com/DemonVex/backrunner.git && \
 	cd /root/go/src/github.com/DemonVex/backrunner && \

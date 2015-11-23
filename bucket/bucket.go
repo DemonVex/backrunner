@@ -7,7 +7,7 @@ import (
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
 	"github.com/DemonVex/backrunner/reply"
-	"github.com/bioothod/elliptics-go/elliptics"
+	"github.com/DemonVex/elliptics-go/elliptics"
 	"gopkg.in/vmihailenco/msgpack.v2"
 	"fmt"
 	"log"

@@ -2,7 +2,7 @@ package errors
 
 import (
 	"fmt"
-	"github.com/bioothod/elliptics-go/elliptics"
+	"github.com/DemonVex/elliptics-go/elliptics"
 	"net/http"
 	"syscall"
 )

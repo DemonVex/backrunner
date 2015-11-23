@@ -2,7 +2,7 @@ package btest
 
 import (
 	"fmt"
-	"github.com/bioothod/elliptics-go/elliptics"
+	"github.com/DemonVex/elliptics-go/elliptics"
 )
 
 func check_backend(ch <-chan *elliptics.DnetBackendsStatus, s *elliptics.Session, addr *elliptics.DnetAddr, backend_id int32, ro bool, delay uint32) error {

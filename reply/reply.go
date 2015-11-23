@@ -1,6 +1,6 @@
 package reply
 
-import "github.com/bioothod/elliptics-go/elliptics"
+import "github.com/DemonVex/elliptics-go/elliptics"
 
 type LookupServerResult struct {
 	Addr		*elliptics.DnetAddr	`json:"-"` // address this reply has been received

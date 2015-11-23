@@ -2,7 +2,7 @@ package etransport
 
 import (
 	"C"
-	"github.com/bioothod/elliptics-go/elliptics"
+	"github.com/DemonVex/elliptics-go/elliptics"
 	"github.com/DemonVex/backrunner/config"
 	"io"
 	"log"
