@@ -93,11 +93,9 @@ func (e *Elliptics) Stat() (stat *elliptics.DnetStat, err error) {
 	stat = s.DnetStat()
 
 	e.Lock()
-
+	defer e.Unlock()
 	stat.Diff(e.prev_stat)
 	e.prev_stat = stat
-
-	e.Unlock()
 
 	return
 }

@@ -106,18 +106,20 @@ func (e *Estimator) MarshalJSON() ([]byte, error) {
 	idx := second % EstimatorRange
 
 	res := make(map[string]RequestStat)
+	func () {
+		e.Lock()
+		defer e.Unlock()
 
-	e.Lock()
-	for k, v := range e.RS {
-		e.PushNolock(0, 0, k)
+		for k, v := range e.RS {
+			e.PushNolock(0, 0, k)
 
-		v.Copy(idx)
+			v.Copy(idx)
 
-		if v.RPS > 0.1 {
-			res[strconv.Itoa(k)] = *v
+			if v.RPS > 0.1 {
+				res[strconv.Itoa(k)] = *v
+			}
 		}
-	}
-	e.Unlock()
+	}  ()
 
 	return json.Marshal(res)
 }

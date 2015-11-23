@@ -614,11 +614,14 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 
 	start := time.Now()
 
-	proxy.bctl.RLock()
-	for k, v := range proxy.bctl.Conf.Proxy.Headers {
-		w.Header().Set(k, v)
-	}
-	proxy.bctl.RUnlock()
+	func () {
+		proxy.bctl.RLock()
+		defer proxy.bctl.RUnlock()
+
+		for k, v := range proxy.bctl.Conf.Proxy.Headers {
+			w.Header().Set(k, v)
+		}
+	} ()
 
 	content_length := get_content_length(req.Header)
 

@@ -78,98 +78,99 @@ func (bctl *BucketCtl) ScanBuckets() {
 		return
 	}
 
-	bctl.RLock()
-
-	bctl.DefragTime = time.Now()
-	log.Printf("defrag: starting defrag scanning\n")
-
 	defrag_buckets := make([]bstat, 0)
 
-	for _, b := range bctl.AllBuckets() {
-		groups_defrag_already_running := 0
+	func () {
+		bctl.RLock()
+		defer bctl.RUnlock()
 
-		for _, stat_group := range b.Group {
-			backends_defrag_already_running := 0
+		bctl.DefragTime = time.Now()
+		log.Printf("defrag: starting defrag scanning\n")
 
-			for _, st := range stat_group.Ab {
-				// allow at most half of the groups to have backends being defragmented
-				// this allows clients to read data from groups where there is no defragmentation process
-				if st.DefragState != 0 {
-					if backends_defrag_already_running == 0 {
-						groups_defrag_already_running++
+		for _, b := range bctl.AllBuckets() {
+			groups_defrag_already_running := 0
+
+			for _, stat_group := range b.Group {
+				backends_defrag_already_running := 0
+
+				for _, st := range stat_group.Ab {
+					// allow at most half of the groups to have backends being defragmented
+					// this allows clients to read data from groups where there is no defragmentation process
+					if st.DefragState != 0 {
+						if backends_defrag_already_running == 0 {
+							groups_defrag_already_running++
+						}
+						backends_defrag_already_running++
+
+						if groups_defrag_already_running * 2 > len(b.Group) {
+							break
+						}
 					}
-					backends_defrag_already_running++
+				}
 
-					if groups_defrag_already_running * 2 > len(b.Group) {
-						break
-					}
+				// do not allow to run defragmentation in bucket where
+				// more than a half of its groups are 'dirty', i.e. where defragmentation process is already running
+				if groups_defrag_already_running * 2 > len(b.Group) {
+					break
 				}
 			}
 
-			// do not allow to run defragmentation in bucket where
-			// more than a half of its groups are 'dirty', i.e. where defragmentation process is already running
 			if groups_defrag_already_running * 2 > len(b.Group) {
-				break
+				continue
+			}
+
+			for group_id, stat_group := range b.Group {
+				for ab, st := range stat_group.Ab {
+					// there is no statistics for this group, skip it
+					if st.VFS.TotalSizeLimit == 0 {
+						log.Printf("defrag: bucket: %s, %s: no statistics for this backend\n",
+							b.Name, ab.String())
+						continue
+					}
+
+					if st.RO {
+						log.Printf("defrag: bucket: %s, %s: backend is in read-only mode\n",
+							b.Name, ab.String())
+						continue
+					}
+
+					free_space_rate := FreeSpaceRatio(st, 0)
+					if free_space_rate > bctl.Conf.Proxy.DefragFreeSpaceLimit {
+						log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, must be < %f\n",
+							b.Name, ab.String(), free_space_rate, bctl.Conf.Proxy.DefragFreeSpaceLimit)
+						continue
+					}
+
+					removed_space_rate := float64(st.VFS.BackendRemovedSize) / float64(st.VFS.TotalSizeLimit)
+					if removed_space_rate < bctl.Conf.Proxy.DefragRemovedSpaceLimit {
+						log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, removed-space-rate: %f, must be > %f\n",
+							b.Name, ab.String(), free_space_rate,
+							removed_space_rate, bctl.Conf.Proxy.DefragRemovedSpaceLimit)
+						continue
+					}
+
+					if free_space_rate > 1 || removed_space_rate > 1 {
+						log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, removed-space-rate: %f, invalid stats\n",
+							b.Name, ab.String(), free_space_rate, removed_space_rate)
+						continue
+					}
+
+					bs := bstat{
+						bucket:            b,
+						ab:            ab,
+						free_space_rate:    free_space_rate,
+						removed_space_rate:    removed_space_rate,
+					}
+
+					log.Printf("defrag: added bucket: %s, %s, group: %d, free-space-rate: %f, removed-space-rate: %f, used: %d, removed: %d, total: %d\n",
+						b.Name, ab.String(), group_id, free_space_rate, removed_space_rate,
+						st.VFS.BackendUsedSize, st.VFS.BackendRemovedSize, st.VFS.TotalSizeLimit)
+
+					defrag_buckets = append(defrag_buckets, bs)
+				}
 			}
 		}
-
-		if groups_defrag_already_running * 2 > len(b.Group) {
-			continue
-		}
-
-		for group_id, stat_group := range b.Group {
-			for ab, st := range stat_group.Ab {
-				// there is no statistics for this group, skip it
-				if st.VFS.TotalSizeLimit == 0 {
-					log.Printf("defrag: bucket: %s, %s: no statistics for this backend\n",
-						b.Name, ab.String())
-					continue
-				}
-
-				if st.RO {
-					log.Printf("defrag: bucket: %s, %s: backend is in read-only mode\n",
-						b.Name, ab.String())
-					continue
-				}
-
-				free_space_rate := FreeSpaceRatio(st, 0)
-				if free_space_rate > bctl.Conf.Proxy.DefragFreeSpaceLimit {
-					log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, must be < %f\n",
-						b.Name, ab.String(), free_space_rate, bctl.Conf.Proxy.DefragFreeSpaceLimit)
-					continue
-				}
-
-				removed_space_rate := float64(st.VFS.BackendRemovedSize) / float64(st.VFS.TotalSizeLimit)
-				if removed_space_rate < bctl.Conf.Proxy.DefragRemovedSpaceLimit {
-					log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, removed-space-rate: %f, must be > %f\n",
-						b.Name, ab.String(), free_space_rate,
-						removed_space_rate, bctl.Conf.Proxy.DefragRemovedSpaceLimit)
-					continue
-				}
-
-				if free_space_rate > 1 || removed_space_rate > 1 {
-					log.Printf("defrag: bucket: %s, %s, free-space-rate: %f, removed-space-rate: %f, invalid stats\n",
-						b.Name, ab.String(), free_space_rate, removed_space_rate)
-					continue
-				}
-
-				bs := bstat {
-					bucket:			b,
-					ab:			ab,
-					free_space_rate:	free_space_rate,
-					removed_space_rate:	removed_space_rate,
-				}
-
-				log.Printf("defrag: added bucket: %s, %s, group: %d, free-space-rate: %f, removed-space-rate: %f, used: %d, removed: %d, total: %d\n",
-					b.Name, ab.String(), group_id, free_space_rate, removed_space_rate,
-					st.VFS.BackendUsedSize, st.VFS.BackendRemovedSize, st.VFS.TotalSizeLimit)
-
-				defrag_buckets = append(defrag_buckets, bs)
-			}
-		}
-	}
-
-	bctl.RUnlock()
+	} ()
 
 	bctl.DefragBuckets(defrag_buckets)
 
