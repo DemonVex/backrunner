@@ -10,6 +10,7 @@ import (
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/estimator"
 	"github.com/DemonVex/backrunner/etransport"
+	"github.com/DemonVex/backrunner/range"
 	"github.com/DemonVex/backrunner/reply"
 	"io/ioutil"
 	"log"
@@ -236,14 +237,22 @@ func redirect_handler(w http.ResponseWriter, req *http.Request, string_keys ...s
 		slash = ""
 	}
 
-	offset, size, err := bucket.URIOffsetSize(req)
+	ranges, err := ranges.ParseRange(req.Header.Get("Range"), int64(srv.Size))
 	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("redirect: %v", err))
+		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("upload: %v", err))
 		return Reply {
 			err: err,
 			status: errors.ErrorStatus(err),
 		}
 	}
+
+	var offset uint64 = 0
+	var size uint64 = 0
+	if len(ranges) != 0 {
+		offset = uint64(ranges[0].Start)
+		size = uint64(ranges[0].Length)
+	}
+
 
 	if offset >= srv.Size {
 		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
@@ -439,8 +448,18 @@ func exit_handler(w http.ResponseWriter, req *http.Request, strings ...string) R
 	return GoodReply()
 }
 
-func stat_handler(w http.ResponseWriter, req *http.Request, strings ...string) Reply {
-	reply, err := proxy.bctl.Stat(req)
+func stat_handler(w http.ResponseWriter, req *http.Request, str ...string) Reply {
+	bnames := make([]string, 0)
+
+	bnames_combined := strings.SplitN(str[0], "/", 2)
+	if len(bnames_combined[0]) != 0 {
+		bnames = strings.Split(bnames_combined[0], ",")
+		if len(bnames[0]) == 0 {
+			bnames = []string{}
+		}
+	}
+
+	reply, err := proxy.bctl.Stat(req, bnames)
 	if err != nil {
 		return Reply {
 			err: err,
@@ -662,7 +681,12 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 							len(hstrings) - 1, h.Params + 1))
 					ok = false
 				} else {
-					param_strings = strings.SplitN(hstrings[2], "/", h.Params)
+					if h.Params == 0 {
+						param_strings = append(param_strings, hstrings[2])
+					} else {
+						param_strings = strings.SplitN(hstrings[2], "/", h.Params)
+					}
+
 					if len(param_strings) < h.Params {
 						reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
 							fmt.Sprintf("not enough path parameters for handler: %v, must be at least: %d",
@@ -754,10 +778,6 @@ func main() {
 	config_file := flag.String("config", "", "Transport config file")
 	flag.Parse()
 
-	if *buckets == "" {
-		log.Fatal("there is no buckets file")
-	}
-
 	if *config_file == "" {
 		log.Fatal("You must specify config file")
 	}
@@ -775,6 +795,11 @@ func main() {
 		log.Fatalf("Could not load config %s: %q", *config_file, err)
 	}
 
+	if *buckets == "" && len(conf.Elliptics.BucketList) == 0 {
+		log.Fatalf("There is no buckets file and there is no 'bucket-list' option in elliptics config.")
+	}
+
+
 	if len(conf.Proxy.Address) == 0 {
 		log.Fatalf("'address' must be specified in proxy config '%s'\n", *config_file)
 	}
@@ -791,11 +816,11 @@ func main() {
 		log.Fatalf("Could not create Elliptics transport: %v", err)
 	}
 
-	rand.Seed(9)
+	rand.Seed(time.Now().Unix())
 
 	proxy.bctl, err = bucket.NewBucketCtl(proxy.ell, *buckets, *config_file)
 	if err != nil {
-		log.Fatalf("Could not process buckets file '%s': %v", *buckets, err)
+		log.Fatalf("Could not create new bucket controller: %v", err)
 	}
 
 	if len(conf.Proxy.HTTPSAddress) != 0 {

@@ -7,6 +7,7 @@ import (
 	"github.com/DemonVex/backrunner/config"
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
+	"github.com/DemonVex/backrunner/range"
 	"github.com/DemonVex/backrunner/reply"
 	"github.com/DemonVex/elliptics-go/elliptics"
 	"io"
@@ -50,32 +51,6 @@ const (
 
 	PainDiscrepancy float64		= 1000.0
 )
-
-func URIOffsetSize(req *http.Request) (offset uint64, size uint64, err error) {
-	offset = 0
-	size = 0
-
-	q := req.URL.Query()
-	offset_str := q.Get("offset")
-	if offset_str != "" {
-		offset, err = strconv.ParseUint(offset_str, 0, 64)
-		if err != nil {
-			err = fmt.Errorf("could not parse offset URI: %s: %v", offset_str, err)
-			return
-		}
-	}
-
-	size_str := q.Get("size")
-	if size_str != "" {
-		size, err = strconv.ParseUint(size_str, 0, 64)
-		if err != nil {
-			err = fmt.Errorf("could not parse size URI: %s: %v", size_str, err)
-			return
-		}
-	}
-
-	return offset, size, nil
-}
 
 type BucketCtl struct {
 	sync.RWMutex
@@ -486,11 +461,17 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 	log.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
-	offset, _, err := URIOffsetSize(req)
+	ranges, err := ranges.ParseRange(req.Header.Get("Range"), int64(total_size))
 	if err != nil {
 		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("upload: %v", err))
 		return
 	}
+
+	var offset uint64 = 0
+	if len(ranges) != 0 {
+		offset = uint64(ranges[0].Start)
+	}
+
 
 	start := time.Now()
 
@@ -573,56 +554,6 @@ func (bctl *BucketCtl) BucketUpload(bucket_name, key string, req *http.Request) 
 	return
 }
 
-func (bctl *BucketCtl) Get(bname, key string, req *http.Request) (resp []byte, err error) {
-	bucket, err := bctl.FindBucket(bname)
-	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, err.Error())
-		return
-	}
-
-	err = bucket.check_auth(req, BucketAuthEmpty)
-	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), errors.ErrorStatus(err),
-			fmt.Sprintf("get: %s", errors.ErrorData(err)))
-		return
-	}
-
-	s, err := bctl.e.DataSession(req)
-	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), http.StatusServiceUnavailable,
-			fmt.Sprintf("get: could not create data session: %v", err))
-		return
-	}
-	defer s.Delete()
-
-	s.SetFilter(elliptics.SessionFilterAll)
-	s.SetNamespace(bucket.Name)
-	s.SetGroups(bucket.Meta.Groups)
-	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
-
-	log.Printf("get-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
-		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
-
-	offset, size, err := URIOffsetSize(req)
-	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("get: %v", err))
-		return
-	}
-
-	for rd := range s.ReadData(key, offset, size) {
-		err = rd.Error()
-		if err != nil {
-			err = errors.NewKeyErrorFromEllipticsError(rd.Error(), req.URL.String(),
-				"get: could not read data")
-			continue
-		}
-
-		resp = rd.Data()
-		return
-	}
-	return
-}
-
 func (bctl *BucketCtl) SetContentType(key string, w http.ResponseWriter) {
 	bctl.RLock()
 	defer bctl.RUnlock()
@@ -694,8 +625,6 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 		return
 	}
 
-	bctl.SetContentType(key, w)
-
 	s, err := bctl.e.DataSession(req)
 	if err != nil {
 		err = errors.NewKeyError(req.URL.String(), http.StatusServiceUnavailable,
@@ -711,18 +640,15 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
-	offset, size, err := URIOffsetSize(req)
+	rs, err := elliptics.NewReadSeeker(s, key)
 	if err != nil {
-		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("stream: %v", err))
+		err = errors.NewKeyErrorFromEllipticsError(err, req.URL.String(), "stream: could not create read-seeker")
 		return
 	}
+	defer rs.Free()
 
-	err = s.StreamHTTP(key, offset, size, w)
-	if err != nil {
-		err = errors.NewKeyErrorFromEllipticsError(err, req.URL.String(), "stream: could not stream data")
-		return
-	}
-
+	bctl.SetContentType(key, w)
+	http.ServeContent(w, req, key, rs.Mtime, rs)
 	return
 }
 
@@ -852,7 +778,7 @@ type BctlStat struct {
 	StatTime	string
 }
 
-func (bctl *BucketCtl) Stat(req *http.Request) (reply *BctlStat, err error) {
+func (bctl *BucketCtl) Stat(req *http.Request, bnames []string) (reply *BctlStat, err error) {
 	bctl.RLock()
 	defer bctl.RUnlock()
 
@@ -862,6 +788,20 @@ func (bctl *BucketCtl) Stat(req *http.Request) (reply *BctlStat, err error) {
 	}
 
 	for _, b := range bctl.AllBuckets() {
+		if len(bnames) != 0 {
+			found := false
+			for _, name := range(bnames) {
+				if b.Name == name {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				continue
+			}
+		}
+
 		bs := &BucketStat {
 			Group:	make(map[string]*elliptics.StatGroupData),
 			Meta:	&b.Meta,
@@ -878,12 +818,52 @@ func (bctl *BucketCtl) Stat(req *http.Request) (reply *BctlStat, err error) {
 	return
 }
 
-func (bctl *BucketCtl) ReadBucketConfig() error {
-	data, err := ioutil.ReadFile(bctl.bucket_path)
+func (bctl *BucketCtl) EllipticsReadBucketList() (data []byte, err error) {
+	ms, err := bctl.e.MetadataSession()
 	if err != nil {
-		err = fmt.Errorf("Could not read bucket file '%s': %v", bctl.bucket_path, err)
-		log.Printf("config: %v\n", err)
-		return err
+		return
+	}
+	defer ms.Delete()
+
+	ms.SetNamespace(BucketNamespace)
+
+	for rd := range ms.ReadData(bctl.Conf.Elliptics.BucketList, 0, 0) {
+		if rd.Error() != nil {
+			err = rd.Error()
+
+			log.Printf("elliptics-read-bucket-list: %s: could not read bucket list: %v", bctl.Conf.Elliptics.BucketList, err)
+			return
+		}
+
+		data = rd.Data()
+		return
+	}
+
+	err = fmt.Errorf("elliptics-read-bucket-list: %s: could not read bucket list: ReadData() returned nothing",
+			bctl.Conf.Elliptics.BucketList)
+	log.Printf(err.Error())
+	return
+}
+
+
+func (bctl *BucketCtl) ReadBucketConfig() (err error) {
+	var data []byte
+
+	if len(bctl.Conf.Elliptics.BucketList) != 0 {
+		data, err = bctl.EllipticsReadBucketList()
+		if err == nil {
+			log.Printf("Successfully read bucket list from: %s\n", bctl.Conf.Elliptics.BucketList)
+		}
+	}
+
+
+	if err != nil || data == nil || len(data) == 0 || len(bctl.Conf.Elliptics.BucketList) == 0 {
+		data, err = ioutil.ReadFile(bctl.bucket_path)
+		if err != nil {
+			err = fmt.Errorf("Could not read bucket file '%s': %v", bctl.bucket_path, err)
+			log.Printf("config: %v\n", err)
+			return err
+		}
 	}
 
 	new_buckets := make([]*Bucket, 0, 0)
@@ -923,11 +903,62 @@ func (bctl *BucketCtl) ReadBucketConfig() error {
 	return nil
 }
 
+func (bctl *BucketCtl) EllipticsReadBackrunnerConfig(conf *config.ProxyConfig, conf_key string) (err error) {
+	ms, err := bctl.e.MetadataSession()
+	if err != nil {
+		return
+	}
+	defer ms.Delete()
+
+	ms.SetNamespace(BucketNamespace)
+
+	for rd := range ms.ReadData(conf_key, 0, 0) {
+		if rd.Error() != nil {
+			err = rd.Error()
+
+			log.Printf("elliptics-read-backrunner-config: %s: could not read backrunner config: %v",
+				conf_key, err)
+			return
+		}
+
+		reader := bytes.NewReader(rd.Data())
+		err = conf.LoadIO(reader)
+		if err != nil {
+			log.Printf("elliptics-read-backrunner-config: %s: could not load config from elliptics data: %v",
+				conf_key, err)
+			return
+		}
+
+		return
+	}
+
+	err = fmt.Errorf("elliptics-read-backrunner-config: %s: could not read backrunner config: ReadData() returned nothing",
+			conf_key)
+	log.Printf(err.Error())
+	return
+}
+
 func (bctl *BucketCtl) ReadProxyConfig() error {
 	conf := &config.ProxyConfig {}
 	err := conf.Load(bctl.proxy_config_path)
 	if err != nil {
 		return fmt.Errorf("could not load proxy config file '%s': %v", bctl.proxy_config_path, err)
+	}
+
+	if len(conf.Elliptics.BackrunnerConfig) != 0 {
+		ell_conf := &config.ProxyConfig {}
+		err = bctl.EllipticsReadBackrunnerConfig(ell_conf, conf.Elliptics.BackrunnerConfig)
+		if err == nil {
+			log.Printf("Successfully read backrunner config from: %s\n", conf.Elliptics.BackrunnerConfig)
+			conf = ell_conf
+		}
+	}
+
+	if err != nil || len(conf.Elliptics.BackrunnerConfig) == 0 {
+		err = conf.Load(bctl.proxy_config_path)
+		if err != nil {
+			return fmt.Errorf("could not load proxy config file '%s': %v", bctl.proxy_config_path, err)
+		}
 	}
 
 	func () {
@@ -1051,16 +1082,16 @@ func (bctl *BucketCtl) NewBucketCtlStat() (*BucketCtlStat) {
 }
 
 func (bctl *BucketCtl) ReadConfig() (err error) {
-	err = bctl.ReadBucketConfig()
+	err = bctl.ReadProxyConfig()
 	if err != nil {
-		err = fmt.Errorf("read-config: failed to update bucket config: %v", err)
+		err = fmt.Errorf("read-config: failed to update proxy config: %v", err)
 		log.Printf("%s", err)
 		return
 	}
 
-	err = bctl.ReadProxyConfig()
+	err = bctl.ReadBucketConfig()
 	if err != nil {
-		err = fmt.Errorf("read-config: failed to update proxy config: %v", err)
+		err = fmt.Errorf("read-config: failed to update bucket config: %v", err)
 		log.Printf("%s", err)
 		return
 	}

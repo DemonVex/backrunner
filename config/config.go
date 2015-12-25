@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"os"
 )
 
 var (
@@ -110,6 +112,12 @@ type EllipticsClientConfig struct {
 	LogPrefix string			`json:"log-prefix"`
 	Remote []string				`json:"remote"`
 	MetadataGroups []uint32			`json:"metadata-groups"`
+
+	// when present, backrunner reads its proxy config from elliptics from metadata groups
+	BackrunnerConfig string			`json:"backrunner-config-key"`
+
+	// when present, backrunner reads list of buckets from elliptics
+	BucketList string			`json:"bucket-list-key"`
 }
 
 type ProxyClientConfig struct {
@@ -210,8 +218,8 @@ func (config *ProxyConfig) Save(file string) (err error) {
 	return
 }
 
-func (config *ProxyConfig) Load(file string) (err error) {
-	data, err := ioutil.ReadFile(file)
+func (config *ProxyConfig) LoadIO(in io.Reader) (err error) {
+	data, err := ioutil.ReadAll(in)
 	if err != nil {
 		return
 	}
@@ -222,4 +230,14 @@ func (config *ProxyConfig) Load(file string) (err error) {
 	}
 
 	return
+}
+
+func (config *ProxyConfig) Load(file string) error {
+	io, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer io.Close()
+
+	return config.LoadIO(io)
 }
