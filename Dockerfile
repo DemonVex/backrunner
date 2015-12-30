@@ -11,7 +11,7 @@ RUN apt-get update && apt-get -y upgrade && \
 
 RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	export GOPATH=/root/go && \
-	VERSION=go1.5.1 && \
+	VERSION=go1.5.2 && \
 	curl -f -I https://storage.googleapis.com/golang/$VERSION.linux-amd64.tar.gz && \
 	test `go version | awk {'print $3'}` = $VERSION || \
 	echo "Downloading" && \
@@ -22,12 +22,13 @@ RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	
 RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin && \
 	export GOPATH=/root/go && \
-	mkdir -p /root/go/src/github.com/DemonVex && \
-	cd /root/go/src/github.com/DemonVex && \
-	git clone https://github.com/DemonVex/elliptics-go.git && \
-	cd /root/go/src/github.com/DemonVex/elliptics-go/elliptics && \
+	mkdir -p /root/go/src/github.com/bioothod && \
+	cd /root/go/src/github.com/bioothod && \
+	git clone https://github.com/bioothod/elliptics-go.git && \
+	cd /root/go/src/github.com/bioothod/elliptics-go/elliptics && \
 	go install && \
 	echo "Go binding has been updated" && \
+	mkdir -p /root/go/src/github.com/DemonVex && \
 	cd /root/go/src/github.com/DemonVex && \
 	git clone https://github.com/DemonVex/backrunner.git && \
 	cd /root/go/src/github.com/DemonVex/backrunner && \
