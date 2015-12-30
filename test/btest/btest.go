@@ -11,7 +11,7 @@ import (
 	"github.com/DemonVex/backrunner/config"
 	"github.com/DemonVex/backrunner/etransport"
 	"github.com/DemonVex/backrunner/reply"
-	"github.com/DemonVex/elliptics-go/elliptics"
+	"github.com/bioothod/elliptics-go/elliptics"
 	"io"
 	"io/ioutil"
 	"log"
