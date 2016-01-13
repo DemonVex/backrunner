@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/DemonVex/backrunner/alog"
 	"github.com/DemonVex/backrunner/config"
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
@@ -455,7 +456,7 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 	s.SetTimeout(100)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	ranges, err := ranges.ParseRange(req.Header.Get("Range"), int64(total_size))
@@ -523,7 +524,7 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 	}()
 
-	log.Printf("bucket-upload: bucket: %s, key: %s, size: %d: %v\n", bucket.Name, key, total_size, str)
+	alog.Printf("bucket-upload: bucket: %s, key: %s, size: %d: %v\n", bucket.Name, key, total_size, str)
 
 	return
 }
@@ -634,7 +635,7 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 	s.SetNamespace(bucket.Name)
 	bctl.SetGroupsTimeout(s, bucket, key)
 
-	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	rs, err := elliptics.NewReadSeeker(s, key)
@@ -677,7 +678,7 @@ func (bctl *BucketCtl) Lookup(bname, key string, req *http.Request) (reply *repl
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
 
-	log.Printf("lookup-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("lookup-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	reply, err = bucket.lookup_serialize(false, s.ParallelLookup(key))
@@ -711,7 +712,7 @@ func (bctl *BucketCtl) Delete(bname, key string, req *http.Request) (err error) 
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("delete-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("delete-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	for r := range s.Remove(key) {
@@ -750,7 +751,7 @@ func (bctl *BucketCtl) BulkDelete(bname string, keys []string, req *http.Request
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("bulk-delete-trace-id: %x: url: %s, bucket: %s, keys: %v\n",
+	alog.Printf("bulk-delete-trace-id: %x: url: %s, bucket: %s, keys: %v\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, keys)
 
 	for r := range s.BulkRemove(keys) {
@@ -968,14 +969,27 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 		bctl.e.LogFile.Close()
 	}
 
+	if bctl.e.AccessLogFile != nil {
+		bctl.e.AccessLogFile.Close()
+	}
+
 	bctl.e.LogFile, err = os.OpenFile(conf.Elliptics.LogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
 	if err != nil {
 		log.Fatalf("Could not open log file '%s': %q", conf.Elliptics.LogFile, err)
 	}
 
+	bctl.e.AccessLogFile, err = os.OpenFile(conf.Elliptics.AccessLogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
+	if err != nil {
+		log.Fatalf("Could not open access log file '%s': %q", conf.Elliptics.AccessLogFile, err)
+	}
+
 	log.SetPrefix(conf.Elliptics.LogPrefix)
 	log.SetOutput(bctl.e.LogFile)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	alog.SetPrefix(conf.Elliptics.LogPrefix)
+	alog.SetOutput(bctl.e.AccessLogFile)
+	alog.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
 	log.Printf("Proxy config has been updated\n")
 	return nil

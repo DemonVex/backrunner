@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/DemonVex/backrunner/alog"
 	"github.com/DemonVex/backrunner/auth"
 	"github.com/DemonVex/backrunner/bucket"
 	"github.com/DemonVex/backrunner/config"
@@ -738,7 +739,7 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 		h.Estimator.Push(content_length, reply.status)
 	}
 
-	log.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
+	alog.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
 		req.Method, req.RemoteAddr, req.Header.Get("X-Forwarded-For"),
 		path, req.URL.RequestURI(), reply.status, content_length,
 		float64(duration.Nanoseconds()) / 1000000.0, msg)

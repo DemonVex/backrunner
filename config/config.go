@@ -111,6 +111,7 @@ type EllipticsClientConfig struct {
 	LogFile string				`json:"log-file"`
 	LogLevel string				`json:"log-level"`
 	LogPrefix string			`json:"log-prefix"`
+	AccessLogFile string        `json:"access-log-file"`
 	Remote []string				`json:"remote"`
 	MetadataGroups []uint32			`json:"metadata-groups"`
 

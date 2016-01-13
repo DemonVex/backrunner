@@ -2,6 +2,7 @@ package etransport
 
 import (
 	"C"
+	"github.com/DemonVex/backrunner/alog"
 	"github.com/bioothod/elliptics-go/elliptics"
 	"github.com/DemonVex/backrunner/config"
 	"io"
@@ -14,7 +15,8 @@ import (
 )
 
 type Elliptics struct {
-	LogFile		io.WriteCloser
+	LogFile		  io.WriteCloser
+	AccessLogFile io.WriteCloser
 
 	Node		*elliptics.Node
 	MetadataGroups	[]uint32
@@ -114,10 +116,20 @@ func NewEllipticsTransport(conf *config.ProxyConfig) (e *Elliptics, err error) {
 		log.Fatalf("Could not open log file '%s': %q", conf.Elliptics.LogFile, err)
 	}
 
+	e.AccessLogFile, err = os.OpenFile(conf.Elliptics.AccessLogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
+	if err != nil {
+		log.Fatalf("Could not open access log file '%s': %q", conf.Elliptics.AccessLogFile, err)
+	}
+
 	log.SetPrefix(conf.Elliptics.LogPrefix)
 	log.SetOutput(e.LogFile)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	alog.SetPrefix(conf.Elliptics.LogPrefix)
+	alog.SetOutput(e.AccessLogFile)
+	alog.SetFlags(log.LstdFlags | log.Lmicroseconds)
+
+	e.Node, err = elliptics.NewNode(conf.Elliptics.LogFile, conf.Elliptics.LogLevel)
 	var default_config elliptics.NodeConfig
 	if conf.Elliptics.Node != default_config {
 		e.Node, err = elliptics.NewNodeConfig(conf.Elliptics.LogFile, conf.Elliptics.LogLevel, &conf.Elliptics.Node)

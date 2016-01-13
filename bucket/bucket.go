@@ -3,6 +3,7 @@ package bucket
 import (
 	"bytes"
 	"encoding/hex"
+	"github.com/DemonVex/backrunner/alog"
 	"github.com/DemonVex/backrunner/auth"
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
@@ -231,7 +232,7 @@ func (b *Bucket) check_auth(r *http.Request, required_flags uint64) (err error) 
 		return
 	}
 
-	log.Printf("check-auth: url: %s, user: %s, token: %s, flags: %x, required: %x\n",
+	alog.Printf("check-auth: url: %s, user: %s, token: %s, flags: %x, required: %x\n",
 		r.URL.String(), acl.User, acl.Token, acl.Flags, required_flags)
 
 	// only require required_flags check if its not @BucketAuthEmpty
