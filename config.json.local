@@ -4,6 +4,7 @@
 		"log-file1": "backrunner.log",
 		"log-level": "info",
 		"log-prefix": "backrunner: ",
+		"access-log-file": "backrunner.log",
 		"remote": [
 			"qweqwe:1024:2",
 			"localhost:1025:2",

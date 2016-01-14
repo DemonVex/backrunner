@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/DemonVex/backrunner/alog"
+	"github.com/DemonVex/backrunner/elog"
 	"github.com/DemonVex/backrunner/auth"
 	"github.com/DemonVex/backrunner/bucket"
 	"github.com/DemonVex/backrunner/config"
@@ -13,7 +15,6 @@ import (
 	"github.com/DemonVex/backrunner/range"
 	"github.com/DemonVex/backrunner/reply"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -378,7 +379,7 @@ func bulk_delete_handler(w http.ResponseWriter, req *http.Request, strings ...st
 
 	reply_json, err := json.Marshal(reply)
 	if err != nil {
-		log.Printf("url: %s: bulk_delete: json marshal failed: %q\n", req.URL, err)
+		elog.Errorf("url: %s: bulk_delete: json marshal failed: %q\n", req.URL, err)
 		return Reply {
 			err: err,
 			status: http.StatusBadRequest,
@@ -420,7 +421,7 @@ func common_handler(w http.ResponseWriter, req *http.Request, strings ...string)
 
 	data, err := ioutil.ReadFile(key)
 	if err != nil {
-		log.Printf("common: url: %s, object: '%s', error: %s\n", req.URL.String(), object, err)
+		elog.Errorf("common: url: %s, object: '%s', error: %s\n", req.URL.String(), object, err)
 
 		err = errors.NewKeyError(req.URL.String(), http.StatusNotFound,
 			fmt.Sprintf("common: could not read file '%s'", object))
@@ -738,7 +739,7 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 		h.Estimator.Push(content_length, reply.status)
 	}
 
-	log.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
+	alog.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
 		req.Method, req.RemoteAddr, req.Header.Get("X-Forwarded-For"),
 		path, req.URL.RequestURI(), reply.status, content_length,
 		float64(duration.Nanoseconds()) / 1000000.0, msg)
@@ -779,7 +780,7 @@ func main() {
 	flag.Parse()
 
 	if *config_file == "" {
-		log.Fatal("You must specify config file")
+		elog.Fatal("You must specify config file")
 	}
 
 	for _, h := range proxy_handlers {
@@ -792,20 +793,20 @@ func main() {
 	conf := &config.ProxyConfig {}
 	err = conf.Load(*config_file)
 	if err != nil {
-		log.Fatalf("Could not load config %s: %q", *config_file, err)
+		elog.Fatalf("Could not load config %s: %q", *config_file, err)
 	}
 
 	if *buckets == "" && len(conf.Elliptics.BucketList) == 0 {
-		log.Fatalf("There is no buckets file and there is no 'bucket-list' option in elliptics config.")
+		elog.Fatalf("There is no buckets file and there is no 'bucket-list' option in elliptics config.")
 	}
 
 
 	if len(conf.Proxy.Address) == 0 {
-		log.Fatalf("'address' must be specified in proxy config '%s'\n", *config_file)
+		elog.Fatalf("'address' must be specified in proxy config '%s'\n", *config_file)
 	}
 
 	if conf.Proxy.RedirectPort == 0 || conf.Proxy.RedirectPort >= 65536 {
-		log.Printf("redirect is not allowed because of invalid redirect port %d",
+		elog.Warningf("redirect is not allowed because of invalid redirect port %d",
 			conf.Proxy.RedirectPort)
 	}
 
@@ -813,34 +814,34 @@ func main() {
 
 	proxy.ell, err = etransport.NewEllipticsTransport(conf)
 	if err != nil {
-		log.Fatalf("Could not create Elliptics transport: %v", err)
+		elog.Fatalf("Could not create Elliptics transport: %v", err)
 	}
 
 	rand.Seed(time.Now().Unix())
 
 	proxy.bctl, err = bucket.NewBucketCtl(proxy.ell, *buckets, *config_file)
 	if err != nil {
-		log.Fatalf("Could not create new bucket controller: %v", err)
+		elog.Fatalf("Could not create new bucket controller: %v", err)
 	}
 
 	if len(conf.Proxy.HTTPSAddress) != 0 {
 		if len(conf.Proxy.CertFile) == 0 {
-			log.Fatalf("If you have specified HTTPS address there MUST be certificate file option")
+			elog.Fatalf("If you have specified HTTPS address there MUST be certificate file option")
 		}
 
 		if len(conf.Proxy.KeyFile) == 0 {
-			log.Fatalf("If you have specified HTTPS address there MUST be key file option")
+			elog.Fatalf("If you have specified HTTPS address there MUST be key file option")
 		}
 
 		// this is needed to allow both HTTPS and HTTP handlers
 		go func() {
 			server := proxy.getTimeoutServer(proxy.bctl.Conf.Proxy.HTTPSAddress, http.HandlerFunc(generic_handler))
-			log.Fatal(server.ListenAndServeTLS(conf.Proxy.CertFile, conf.Proxy.KeyFile))
+			elog.Fatal(server.ListenAndServeTLS(conf.Proxy.CertFile, conf.Proxy.KeyFile))
 		}()
 	}
 
 	if len(conf.Proxy.Address) != 0 {
 		server := proxy.getTimeoutServer(proxy.bctl.Conf.Proxy.Address, http.HandlerFunc(generic_handler))
-		log.Fatal(server.ListenAndServe())
+		elog.Fatal(server.ListenAndServe())
 	}
 }

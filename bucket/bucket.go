@@ -3,6 +3,8 @@ package bucket
 import (
 	"bytes"
 	"encoding/hex"
+	"github.com/DemonVex/backrunner/alog"
+	"github.com/DemonVex/backrunner/elog"
 	"github.com/DemonVex/backrunner/auth"
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
@@ -10,7 +12,6 @@ import (
 	"github.com/bioothod/elliptics-go/elliptics"
 	"gopkg.in/vmihailenco/msgpack.v2"
 	"fmt"
-	"log"
 	"net/http"
 )
 
@@ -231,7 +232,7 @@ func (b *Bucket) check_auth(r *http.Request, required_flags uint64) (err error) 
 		return
 	}
 
-	log.Printf("check-auth: url: %s, user: %s, token: %s, flags: %x, required: %x\n",
+	alog.Printf("check-auth: url: %s, user: %s, token: %s, flags: %x, required: %x\n",
 		r.URL.String(), acl.User, acl.Token, acl.Flags, required_flags)
 
 	// only require required_flags check if its not @BucketAuthEmpty
@@ -326,7 +327,7 @@ func (bucket *Bucket) lookup_serialize(write bool, ch <-chan elliptics.Lookuper)
 func ReadBucket(ell *etransport.Elliptics, name string) (bucket *Bucket, err error) {
 	ms, err := ell.MetadataSession()
 	if err != nil {
-		log.Printf("read-bucket: %s: could not create metadata session: %v", name, err)
+		elog.Errorf("read-bucket: %s: could not create metadata session: %v", name, err)
 		return
 	}
 	defer ms.Delete()
@@ -339,20 +340,20 @@ func ReadBucket(ell *etransport.Elliptics, name string) (bucket *Bucket, err err
 		if rd.Error() != nil {
 			err = rd.Error()
 
-			log.Printf("read-bucket: %s: could not read bucket metadata: %v", name, err)
+			elog.Errorf("read-bucket: %s: could not read bucket metadata: %v", name, err)
 			return
 		}
 
 		var out []interface{}
 		err = msgpack.Unmarshal([]byte(rd.Data()), &out)
 		if err != nil {
-			log.Printf("read-bucket: %s: could not parse bucket metadata: %v", name, err)
+			elog.Errorf("read-bucket: %s: could not parse bucket metadata: %v", name, err)
 			return
 		}
 
 		err = b.Meta.ExtractMsgpack(out)
 		if err != nil {
-			log.Printf("read-bucket: %s: unsupported msgpack data: %v", name, err)
+			elog.Errorf("read-bucket: %s: unsupported msgpack data: %v", name, err)
 			return
 		}
 
@@ -369,7 +370,7 @@ func ReadBucket(ell *etransport.Elliptics, name string) (bucket *Bucket, err err
 func WriteBucket(ell *etransport.Elliptics, meta *BucketMsgpack) (bucket *Bucket, err error) {
 	ms, err := ell.MetadataSession()
 	if err != nil {
-		log.Printf("%s: could not create metadata session: %v", meta.Name, err)
+		elog.Errorf("write-bucket: %s: could not create metadata session: %v", meta.Name, err)
 		return
 	}
 	defer ms.Delete()
@@ -378,13 +379,13 @@ func WriteBucket(ell *etransport.Elliptics, meta *BucketMsgpack) (bucket *Bucket
 
 	out, err := meta.PackMsgpack()
 	if err != nil {
-		log.Printf("%s: could not pack bucket: %v", meta.Name, err)
+		elog.Errorf("write-bucket: %s: could not pack bucket: %v", meta.Name, err)
 		return
 	}
 
 	data, err := msgpack.Marshal(&out)
 	if err != nil {
-		log.Printf("%s: could not parse bucket metadata: %v", meta.Name, err)
+		elog.Errorf("write-bucket: %s: could not parse bucket metadata: %v", meta.Name, err)
 		return
 	}
 
@@ -392,7 +393,7 @@ func WriteBucket(ell *etransport.Elliptics, meta *BucketMsgpack) (bucket *Bucket
 		if wr.Error() != nil {
 			err = wr.Error()
 
-			log.Printf("%s: could not write bucket metadata: %v", meta.Name, err)
+			elog.Errorf("write-bucket: %s: could not write bucket metadata: %v", meta.Name, err)
 			return
 		}
 

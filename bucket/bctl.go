@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/DemonVex/backrunner/alog"
+	"github.com/DemonVex/backrunner/elog"
 	"github.com/DemonVex/backrunner/config"
 	"github.com/DemonVex/backrunner/errors"
 	"github.com/DemonVex/backrunner/etransport"
@@ -131,7 +133,7 @@ func (bctl *BucketCtl) BucketStatUpdateNolock(stat *elliptics.DnetStat) (err err
 			if ok {
 				b.Group[group] = sg
 			} else {
-				log.Printf("bucket-stat-update: bucket: %s, group: %d: there is no bucket stat, using old values (if any)",
+				elog.Warningf("bucket-stat-update: bucket: %s, group: %d: there is no bucket stat, using old values (if any)",
 					b.Name, group)
 			}
 		}
@@ -313,7 +315,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 
 			// do not even consider buckets without free space even in one group
 			if bs.Pain >= PainNoFreeSpaceHard {
-				//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
+				//elog.Warningf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
 				//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
 				//	bs.pains, bs.free_rates)
 				failed = append(failed, bs)
@@ -339,7 +341,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 				bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.abs, bs.Pain, bs.free_rates))
 		}
 
-		log.Printf("find-bucket: url: %s, content-length: %d: there are no suitable buckets: %v",
+		elog.Errorf("find-bucket: url: %s, content-length: %d: there are no suitable buckets: %v",
 			req.URL.String(), req.ContentLength, str)
 		return nil
 	}
@@ -377,7 +379,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 		}
 	}
 
-	log.Printf("find-bucket: url: %s, content-length: %d, buckets: %d, showing top %d: %v",
+	elog.Infof("find-bucket: url: %s, content-length: %d, buckets: %d, showing top %d: %v",
 		req.URL.String(), req.ContentLength, len(stat), len(str), str)
 
 	var sum int64 = 0
@@ -402,7 +404,7 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	for _, bs := range stat {
 		r -= int64(bs.Range)
 		if r <= 0 {
-			log.Printf("find-bucket: url: %s, selected bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v\n",
+			elog.Infof("find-bucket: url: %s, selected bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v\n",
 				req.URL.String(), bs.Bucket.Name, req.ContentLength,
 				bs.Bucket.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups,
 				bs.Pain, bs.pains, bs.free_rates)
@@ -455,7 +457,7 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 	s.SetTimeout(100)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("upload-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	ranges, err := ranges.ParseRange(req.Header.Get("Range"), int64(total_size))
@@ -523,7 +525,7 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 	}()
 
-	log.Printf("bucket-upload: bucket: %s, key: %s, size: %d: %v\n", bucket.Name, key, total_size, str)
+	alog.Printf("bucket-upload: bucket: %s, key: %s, size: %d: %v\n", bucket.Name, key, total_size, str)
 
 	return
 }
@@ -634,7 +636,7 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 	s.SetNamespace(bucket.Name)
 	bctl.SetGroupsTimeout(s, bucket, key)
 
-	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	rs, err := elliptics.NewReadSeeker(s, key)
@@ -677,7 +679,7 @@ func (bctl *BucketCtl) Lookup(bname, key string, req *http.Request) (reply *repl
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.ReaderIOFlags))
 
-	log.Printf("lookup-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("lookup-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	reply, err = bucket.lookup_serialize(false, s.ParallelLookup(key))
@@ -711,7 +713,7 @@ func (bctl *BucketCtl) Delete(bname, key string, req *http.Request) (err error) 
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("delete-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
+	alog.Printf("delete-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
 	for r := range s.Remove(key) {
@@ -750,7 +752,7 @@ func (bctl *BucketCtl) BulkDelete(bname string, keys []string, req *http.Request
 	s.SetGroups(bucket.Meta.Groups)
 	s.SetIOflags(elliptics.IOflag(bctl.Conf.Proxy.WriterIOFlags))
 
-	log.Printf("bulk-delete-trace-id: %x: url: %s, bucket: %s, keys: %v\n",
+	alog.Printf("bulk-delete-trace-id: %x: url: %s, bucket: %s, keys: %v\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, keys)
 
 	for r := range s.BulkRemove(keys) {
@@ -828,7 +830,7 @@ func (bctl *BucketCtl) EllipticsReadBucketList() (data []byte, err error) {
 		if rd.Error() != nil {
 			err = rd.Error()
 
-			log.Printf("elliptics-read-bucket-list: %s: could not read bucket list: %v", bctl.Conf.Elliptics.BucketList, err)
+			elog.Errorf("elliptics-read-bucket-list: %s: could not read bucket list: %v", bctl.Conf.Elliptics.BucketList, err)
 			return
 		}
 
@@ -838,7 +840,7 @@ func (bctl *BucketCtl) EllipticsReadBucketList() (data []byte, err error) {
 
 	err = fmt.Errorf("elliptics-read-bucket-list: %s: could not read bucket list: ReadData() returned nothing",
 			bctl.Conf.Elliptics.BucketList)
-	log.Printf(err.Error())
+	elog.Errorf(err.Error())
 	return
 }
 
@@ -849,7 +851,7 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 	if len(bctl.Conf.Elliptics.BucketList) != 0 {
 		data, err = bctl.EllipticsReadBucketList()
 		if err == nil {
-			log.Printf("Successfully read bucket list from: %s\n", bctl.Conf.Elliptics.BucketList)
+			elog.Infof("Successfully read bucket list from: %s\n", bctl.Conf.Elliptics.BucketList)
 		}
 	}
 
@@ -858,7 +860,7 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		data, err = ioutil.ReadFile(bctl.bucket_path)
 		if err != nil {
 			err = fmt.Errorf("Could not read bucket file '%s': %v", bctl.bucket_path, err)
-			log.Printf("config: %v\n", err)
+			elog.Errorf("config: %v\n", err)
 			return err
 		}
 	}
@@ -869,18 +871,18 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		if len(name) > 0 {
 			b, err := ReadBucket(bctl.e, name)
 			if err != nil {
-				log.Printf("config: could not read bucket: %s: %v\n", name, err)
+				elog.Errorf("config: could not read bucket: %s: %v\n", name, err)
 				continue
 			}
 
 			new_buckets = append(new_buckets, b)
-			log.Printf("config: new bucket: %s\n", b.Meta.String())
+			elog.Infof("config: new bucket: %s\n", b.Meta.String())
 		}
 	}
 
 	if len(new_buckets) == 0 {
 		err = fmt.Errorf("No buckets found in bucket file '%s'", bctl.bucket_path)
-		log.Printf("config: %v\n", err)
+		elog.Errorf("config: %v\n", err)
 		return err
 	}
 
@@ -896,7 +898,7 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		err = bctl.BucketStatUpdateNolock(stat)
 	}()
 
-	log.Printf("Bucket config has been updated, there are %d writable buckets\n", len(new_buckets))
+	elog.Infof("Bucket config has been updated, there are %d writable buckets\n", len(new_buckets))
 	return nil
 }
 
@@ -913,7 +915,7 @@ func (bctl *BucketCtl) EllipticsReadBackrunnerConfig(conf *config.ProxyConfig, c
 		if rd.Error() != nil {
 			err = rd.Error()
 
-			log.Printf("elliptics-read-backrunner-config: %s: could not read backrunner config: %v",
+			elog.Errorf("elliptics-read-backrunner-config: %s: could not read backrunner config: %v",
 				conf_key, err)
 			return
 		}
@@ -921,7 +923,7 @@ func (bctl *BucketCtl) EllipticsReadBackrunnerConfig(conf *config.ProxyConfig, c
 		reader := bytes.NewReader(rd.Data())
 		err = conf.LoadIO(reader)
 		if err != nil {
-			log.Printf("elliptics-read-backrunner-config: %s: could not load config from elliptics data: %v",
+			elog.Errorf("elliptics-read-backrunner-config: %s: could not load config from elliptics data: %v",
 				conf_key, err)
 			return
 		}
@@ -931,7 +933,7 @@ func (bctl *BucketCtl) EllipticsReadBackrunnerConfig(conf *config.ProxyConfig, c
 
 	err = fmt.Errorf("elliptics-read-backrunner-config: %s: could not read backrunner config: ReadData() returned nothing",
 			conf_key)
-	log.Printf(err.Error())
+	elog.Errorf(err.Error())
 	return
 }
 
@@ -946,7 +948,7 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 		ell_conf := &config.ProxyConfig {}
 		err = bctl.EllipticsReadBackrunnerConfig(ell_conf, conf.Elliptics.BackrunnerConfig)
 		if err == nil {
-			log.Printf("Successfully read backrunner config from: %s\n", conf.Elliptics.BackrunnerConfig)
+			elog.Infof("Successfully read backrunner config from: %s\n", conf.Elliptics.BackrunnerConfig)
 			conf = ell_conf
 		}
 	}
@@ -964,20 +966,15 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 		bctl.Conf = conf
 	}()
 
-	if bctl.e.LogFile != nil {
-		bctl.e.LogFile.Close()
-	}
+	elog.SetPrefix(conf.Elliptics.LogPrefix)
+	elog.SetOutputFile(conf.Elliptics.LogFile)
+	elog.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	bctl.e.LogFile, err = os.OpenFile(conf.Elliptics.LogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
-	if err != nil {
-		log.Fatalf("Could not open log file '%s': %q", conf.Elliptics.LogFile, err)
-	}
+	alog.SetPrefix(conf.Elliptics.LogPrefix)
+	alog.SetOutputFile(conf.Elliptics.AccessLogFile)
+	alog.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	log.SetPrefix(conf.Elliptics.LogPrefix)
-	log.SetOutput(bctl.e.LogFile)
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-
-	log.Printf("Proxy config has been updated\n")
+	elog.Infof("Proxy config has been updated\n")
 	return nil
 
 }
@@ -985,7 +982,7 @@ func (bctl *BucketCtl) ReadProxyConfig() error {
 func (bctl *BucketCtl) UpdateMetadata(key string, jsi interface{}) (err error) {
 	ms, err := bctl.e.MetadataSession()
 	if err != nil {
-		log.Printf("%s: metadata update: could not create metadata session: %v", key, err)
+		elog.Errorf("%s: metadata update: could not create metadata session: %v", key, err)
 		return
 	}
 	defer ms.Delete()
@@ -1010,7 +1007,7 @@ func (bctl *BucketCtl) UpdateMetadata(key string, jsi interface{}) (err error) {
 
 	data, err := json.MarshalIndent(&js, "", "  ")
 	if err != nil {
-		log.Printf("%s: metadata update: could not pack json: %v: %v", key, js, err)
+		elog.Errorf("%s: metadata update: could not pack json: %v: %v", key, js, err)
 		return
 	}
 
@@ -1018,7 +1015,7 @@ func (bctl *BucketCtl) UpdateMetadata(key string, jsi interface{}) (err error) {
 		if wr.Error() != nil {
 			err = wr.Error()
 
-			log.Printf("%s: metadata update: could not write data: %v", key, err)
+			elog.Errorf("%s: metadata update: could not write data: %v", key, err)
 		}
 	}
 
@@ -1049,7 +1046,7 @@ type BucketCtlStat struct {
 func (bctl *BucketCtl) NewBucketCtlStat() (*BucketCtlStat) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Printf("new-bucket-ctl: hostname error: %v", err)
+		elog.Warningf("new-bucket-ctl: hostname error: %v", err)
 		hostname = ""
 	}
 
@@ -1082,14 +1079,14 @@ func (bctl *BucketCtl) ReadConfig() (err error) {
 	err = bctl.ReadProxyConfig()
 	if err != nil {
 		err = fmt.Errorf("read-config: failed to update proxy config: %v", err)
-		log.Printf("%s", err)
+		elog.Warningf("%s", err)
 		return
 	}
 
 	err = bctl.ReadBucketConfig()
 	if err != nil {
 		err = fmt.Errorf("read-config: failed to update bucket config: %v", err)
-		log.Printf("%s", err)
+		elog.Warningf("%s", err)
 		return
 	}
 
@@ -1099,7 +1096,7 @@ func (bctl *BucketCtl) ReadConfig() (err error) {
 
 	err = bctl.UpdateMetadata(fmt.Sprintf("%s.ReadConfig", ctl.Hostname), ctl)
 	if err == nil {
-		log.Printf("read-config: updated metadata: hostname: %s, build-data: %s, last-commit: %s, elliptics-go-last-commit: %s\n",
+		elog.Infof("read-config: updated metadata: hostname: %s, build-data: %s, last-commit: %s, elliptics-go-last-commit: %s\n",
 			ctl.Hostname, config.BuildDate, config.LastCommit, config.EllipticsGoLastCommit)
 	}
 
@@ -1137,7 +1134,7 @@ func (bctl *BucketCtl) DumpProfileFile(add_time bool) {
 		p := path.Join(bctl.Conf.Proxy.Root, profile)
 		file, err := os.OpenFile(p, os.O_RDWR | os.O_TRUNC | os.O_CREATE, 0644)
 		if err != nil {
-			log.Printf("dump-profile: failed to open profile '%s': %v", p, err)
+			elog.Warningf("dump-profile: failed to open profile '%s': %v", p, err)
 			return
 		}
 		defer file.Close()

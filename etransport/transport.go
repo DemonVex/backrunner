@@ -2,20 +2,18 @@ package etransport
 
 import (
 	"C"
+	"github.com/DemonVex/backrunner/alog"
+	"github.com/DemonVex/backrunner/elog"
 	"github.com/bioothod/elliptics-go/elliptics"
 	"github.com/DemonVex/backrunner/config"
-	"io"
 	"log"
 	"math/rand"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 )
 
 type Elliptics struct {
-	LogFile		io.WriteCloser
-
 	Node		*elliptics.Node
 	MetadataGroups	[]uint32
 
@@ -106,18 +104,18 @@ func NewEllipticsTransport(conf *config.ProxyConfig) (e *Elliptics, err error) {
 	}
 
 	if len(conf.Elliptics.LogFile) == 0 || len(conf.Elliptics.LogLevel) == 0 {
-		log.Fatal("'log-file' and 'log-level' config parameters must be set")
+		elog.Fatal("'log-file' and 'log-level' config parameters must be set")
 	}
 
-	e.LogFile, err = os.OpenFile(conf.Elliptics.LogFile, os.O_RDWR | os.O_APPEND | os.O_CREATE, 0644)
-	if err != nil {
-		log.Fatalf("Could not open log file '%s': %q", conf.Elliptics.LogFile, err)
-	}
+	elog.SetPrefix(conf.Elliptics.LogPrefix)
+	elog.SetOutputFile(conf.Elliptics.LogFile)
+	elog.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
-	log.SetPrefix(conf.Elliptics.LogPrefix)
-	log.SetOutput(e.LogFile)
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	alog.SetPrefix(conf.Elliptics.LogPrefix)
+	alog.SetOutputFile(conf.Elliptics.AccessLogFile)
+	alog.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	e.Node, err = elliptics.NewNode(conf.Elliptics.LogFile, conf.Elliptics.LogLevel)
 	var default_config elliptics.NodeConfig
 	if conf.Elliptics.Node != default_config {
 		e.Node, err = elliptics.NewNodeConfig(conf.Elliptics.LogFile, conf.Elliptics.LogLevel, &conf.Elliptics.Node)
@@ -126,23 +124,23 @@ func NewEllipticsTransport(conf *config.ProxyConfig) (e *Elliptics, err error) {
 	}
 
 	if err != nil {
-		log.Fatal(err)
+		elog.Fatal(err)
 	}
 
 
 	if len(conf.Elliptics.Remote) == 0 {
-		log.Fatal("'remote' config parameter must be set")
+		elog.Fatal("'remote' config parameter must be set")
 	}
 
 	if len(conf.Elliptics.MetadataGroups) == 0 {
-		log.Fatal("'metadata-groups' config parameter must be set")
+		elog.Fatal("'metadata-groups' config parameter must be set")
 	}
 
 	e.MetadataGroups = conf.Elliptics.MetadataGroups
 
 	err = e.Node.AddRemotes(conf.Elliptics.Remote)
 	if err != nil {
-		log.Fatalf("Could not connect to any remote node from %q: %q", conf.Elliptics.Remote, err)
+		elog.Fatalf("Could not connect to any remote node from %q: %q", conf.Elliptics.Remote, err)
 	}
 
 	return
