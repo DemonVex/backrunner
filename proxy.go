@@ -779,6 +779,7 @@ func main() {
 		log.Fatal(err)
 	}
 	pprof.StartCPUProfile(f)
+	defer f.Close()
 	defer pprof.StopCPUProfile()
 
 	buckets := flag.String("buckets", "", "buckets file (file format: new-line separated list of bucket names)")
