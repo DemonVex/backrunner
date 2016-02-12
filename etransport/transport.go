@@ -33,13 +33,11 @@ func (e *Elliptics) MetadataSession() (ms *elliptics.Session, err error) {
 	return
 }
 
-func (e *Elliptics) DataSession(req *http.Request) (s *elliptics.Session, err error) {
-	s, err = elliptics.NewSession(e.Node)
+func (e *Elliptics) DataSession(req *http.Request) (*elliptics.Session, error) {
+	s, err := elliptics.NewSession(e.Node)
 	if err != nil {
-		return
+		return nil, err
 	}
-
-	s.SetTimeout(40)
 
 	values := req.URL.Query()
 	var val uint64
@@ -79,7 +77,7 @@ func (e *Elliptics) DataSession(req *http.Request) (s *elliptics.Session, err er
 
 	s.SetTraceID(elliptics.TraceID(trace_id))
 
-	return
+	return s, nil
 }
 
 func (e *Elliptics) Stat() (stat *elliptics.DnetStat, err error) {

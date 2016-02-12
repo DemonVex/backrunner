@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -246,8 +247,15 @@ func redirect_handler(w http.ResponseWriter, req *http.Request, string_keys ...s
 		}
 	}
 
-	var offset uint64 = 0
-	var size uint64 = 0
+	offset, size, err := bucket.URIOffsetSize(req)
+	if err != nil {
+		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("redirect: %v", err))
+		return Reply {
+			err: err,
+			status: errors.ErrorStatus(err),
+		}
+	}
+
 	if len(ranges) != 0 {
 		offset = uint64(ranges[0].Start)
 		size = uint64(ranges[0].Length)
@@ -710,6 +718,8 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 				}
 
 				if method_matched {
+					log.Printf("url: %s, handler: %s, time-since-start: %s\n",
+						req.URL.String(), hstrings[1], time.Since(start).String())
 					reply = h.Function(w, req, param_strings...)
 				} else {
 					reply.err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest,
@@ -738,10 +748,10 @@ func generic_handler(w http.ResponseWriter, req *http.Request) {
 		h.Estimator.Push(content_length, reply.status)
 	}
 
-	log.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', status: %d, size: %d, time: %.3f ms, err: '%v'\n",
-		req.Method, req.RemoteAddr, req.Header.Get("X-Forwarded-For"),
-		path, req.URL.RequestURI(), reply.status, content_length,
-		float64(duration.Nanoseconds()) / 1000000.0, msg)
+	log.Printf("access_log: method: '%s', client: '%s', x-fwd: '%v', path: '%s', encoded-uri: '%s', " +
+		"status: %d, size: %d, time: %.3f ms, err: '%v'\n",
+		req.Method, req.RemoteAddr, req.Header.Get("X-Forwarded-For"), path, req.URL.RequestURI(),
+		reply.status, content_length, float64(duration.Nanoseconds()) / 1000000.0, msg)
 
 	if reply.err != nil {
 		http.Error(w, reply.err.Error(), reply.status)
@@ -760,20 +770,7 @@ func (proxy *bproxy) getTimeoutServer(addr string, handler http.Handler) *http.S
 	}
 }
 
-type stringslice []string
-
-func (str *stringslice) String() string {
-	return fmt.Sprintf("%d", *str)
-}
-
-func (str *stringslice) Set(value string) error {
-	*str = append(*str, value)
-	return nil
-}
-
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
 	buckets := flag.String("buckets", "", "buckets file (file format: new-line separated list of bucket names)")
 	config_file := flag.String("config", "", "Transport config file")
 	flag.Parse()
@@ -822,6 +819,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("Could not create new bucket controller: %v", err)
 	}
+
+	go func() {
+		debug.SetGCPercent(10000)
+		var stats debug.GCStats
+
+		for {
+			time.Sleep(5 * time.Second)
+
+			runtime.GC()
+			debug.ReadGCStats(&stats)
+
+			log.Printf("gc: start: %s, duration: %s\n", stats.LastGC.String(), stats.Pause[0].String())
+		}
+	}()
 
 	if len(conf.Proxy.HTTPSAddress) != 0 {
 		if len(conf.Proxy.CertFile) == 0 {

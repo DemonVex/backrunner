@@ -52,6 +52,33 @@ const (
 	PainDiscrepancy float64		= 1000.0
 )
 
+
+func URIOffsetSize(req *http.Request) (offset uint64, size uint64, err error) {
+	offset = 0
+	size = 0
+
+	q := req.URL.Query()
+	offset_str := q.Get("offset")
+	if offset_str != "" {
+		offset, err = strconv.ParseUint(offset_str, 0, 64)
+		if err != nil {
+			err = fmt.Errorf("could not parse offset URI: %s: %v", offset_str, err)
+			return
+		}
+	}
+
+	size_str := q.Get("size")
+	if size_str != "" {
+		size, err = strconv.ParseUint(size_str, 0, 64)
+		if err != nil {
+			err = fmt.Errorf("could not parse size URI: %s: %v", size_str, err)
+		return
+		}
+	}
+
+	return offset, size, nil
+}
+
 type BucketCtl struct {
 	sync.RWMutex
 
@@ -245,33 +272,27 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 					continue
 				}
 
-				free_space_rate := FreeSpaceRatio(st, uint64(req.ContentLength))
-				if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioHard {
-					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
+			free_space_rate := FreeSpaceRatio(st, uint64(req.ContentLength))
+			bs.Pain += 1000.0 / free_space_rate * 5.0
+
+			if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioHard {
+				bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
 					bs.Pain += PainNoFreeSpaceHard
 				} else if free_space_rate <= bctl.Conf.Proxy.FreeSpaceRatioSoft {
 					bs.ErrorGroups = append(bs.ErrorGroups, group_id)
 
-					free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioHard)
-					bs.Pain += PainNoFreeSpaceSoft + free_space_pain * 5
-				} else {
-					bs.SuccessGroups = append(bs.SuccessGroups, group_id)
-
-					free_space_pain := 1000.0 / (free_space_rate - bctl.Conf.Proxy.FreeSpaceRatioSoft)
-					if free_space_pain >= PainNoFreeSpaceSoft {
-						free_space_pain = PainNoFreeSpaceSoft * 0.8
-					}
-
-					bs.Pain += free_space_pain
-				}
+				bs.Pain += PainNoFreeSpaceSoft
+			} else {
+				bs.SuccessGroups = append(bs.SuccessGroups, group_id)
+			}
 
 				pp := st.PIDPain()
 
-				bs.Pain += pp
-				bs.pains = append(bs.pains, pp)
-				bs.free_rates = append(bs.free_rates, free_space_rate)
-			}
+			bs.Pain += pp * float64(req.ContentLength)
+			bs.pains = append(bs.pains, pp)
+			bs.free_rates = append(bs.free_rates, free_space_rate)
+		}
 
 			total_groups := len(bs.SuccessGroups) + len(bs.ErrorGroups)
 			diff := 0
@@ -311,14 +332,16 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 			bs.Pain += float64(max_records - min_records) * PainDiscrepancy
 
 
-			// do not even consider buckets without free space even in one group
-			if bs.Pain >= PainNoFreeSpaceHard {
-				//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, groups: %v, success-groups: %v, error-groups: %v, pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
-				//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
-				//	bs.pains, bs.free_rates)
-				failed = append(failed, bs)
-				continue
-			}
+		// do not even consider buckets without free space even in one group
+		if bs.Pain >= PainNoFreeSpaceHard {
+			//log.Printf("find-bucket: url: %s, bucket: %s, content-length: %d, " +
+			//	"groups: %v, success-groups: %v, error-groups: %v, " +
+			//	"pain: %f, pains: %v, free_rates: %v: pain is higher than HARD limit\n",
+			//	req.URL.String(), b.Name, req.ContentLength, b.Meta.Groups, bs.SuccessGroups, bs.ErrorGroups, bs.Pain,
+			//	bs.pains, bs.free_rates)
+			failed = append(failed, bs)
+			continue
+		}
 
 			if bs.Pain != 0 {
 				bs.Range = 1.0 / bs.Pain
@@ -335,8 +358,11 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	if len(stat) == 0 {
 		str := make([]string, 0)
 		for _, bs := range failed {
-			str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, abs: %v, pain: %f, free-rates: %v}",
-				bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.abs, bs.Pain, bs.free_rates))
+			str = append(str,
+				fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, " +
+						"abs: %v, pain: %f, free-rates: %v}",
+						bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups,
+						bs.abs, bs.Pain, bs.free_rates))
 		}
 
 		log.Printf("find-bucket: url: %s, content-length: %d: there are no suitable buckets: %v",
@@ -369,8 +395,11 @@ func (bctl *BucketCtl) GetBucket(key string, req *http.Request) (bucket *Bucket)
 	str := make([]string, 0)
 	show_num := 0
 	for _, bs := range stat {
-		str = append(str, fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, abs: %v, pain: %f, free-rates: %v}",
-			bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups, bs.abs, bs.Pain, bs.free_rates))
+		str = append(str,
+			fmt.Sprintf("{bucket: %s, success-groups: %v, error-groups: %v, groups: %v, " +
+					"abs: %v, pain: %f, free-rates: %v}",
+					bs.Bucket.Name, bs.SuccessGroups, bs.ErrorGroups, bs.Bucket.Meta.Groups,
+					bs.abs, bs.Pain, bs.free_rates))
 
 		if show_num >= 5 {
 			break
@@ -482,6 +511,9 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 
 	time_us := time.Since(start).Nanoseconds() / 1000
 	e := float64(time_us) / float64(total_size)
+
+	bctl.RLock()
+
 	str := make([]string, 0)
 
 	func() {
@@ -637,7 +669,21 @@ func (bctl *BucketCtl) Stream(bname, key string, w http.ResponseWriter, req *htt
 	log.Printf("stream-trace-id: %x: url: %s, bucket: %s, key: %s, id: %s\n",
 		s.GetTraceID(), req.URL.String(), bucket.Name, key, s.Transform(key))
 
-	rs, err := elliptics.NewReadSeeker(s, key)
+	offset, size, err := URIOffsetSize(req)
+	if err != nil {
+		err = errors.NewKeyError(req.URL.String(), http.StatusBadRequest, fmt.Sprintf("stream: %v", err))
+		return
+	}
+
+	if offset != 0 || size != 0 {
+		if size == 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		} else {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset + size - 1))
+		}
+	}
+
+	rs, err := elliptics.NewReadSeekerOffsetSize(s, key, offset, size)
 	if err != nil {
 		err = errors.NewKeyErrorFromEllipticsError(err, req.URL.String(), "stream: could not create read-seeker")
 		return
@@ -864,6 +910,7 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 	}
 
 	new_buckets := make([]*Bucket, 0, 0)
+	new_back_buckets := make([]*Bucket, 0, 0)
 
 	for _, name := range strings.Split(string(data), "\n") {
 		if len(name) > 0 {
@@ -884,6 +931,24 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		return err
 	}
 
+	back_names := make([]string, 0)
+	bctl.Lock()
+	for _, back_bucket := range bctl.BackBucket {
+		back_names = append(back_names, back_bucket.Name)
+	}
+	bctl.Unlock()
+
+	for _, name := range back_names {
+		b, err := ReadBucket(bctl.e, name)
+		if err != nil {
+			log.Printf("config: could not read bucket: %s: %v\n", name, err)
+			continue
+		}
+
+		new_back_buckets = append(new_back_buckets, b)
+		log.Printf("config: new back bucket: %s\n", b.Meta.String())
+	}
+
 	stat, err := bctl.e.Stat()
 	if err != nil {
 		return err
@@ -893,10 +958,12 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		bctl.Lock()
 		defer bctl.Unlock()
 		bctl.Bucket = new_buckets
+		bctl.BackBucket = new_back_buckets
 		err = bctl.BucketStatUpdateNolock(stat)
 	}()
 
-	log.Printf("Bucket config has been updated, there are %d writable buckets\n", len(new_buckets))
+	log.Printf("Bucket config has been updated, there are %d writable buckets and %d back buckets\n",
+		len(new_buckets), len(new_back_buckets))
 	return nil
 }
 
