@@ -778,9 +778,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pprof.StartCPUProfile(f)
+	runtime.SetBlockProfileRate(1)
+	pprof.Lookup("block").WriteTo(f, 0)
 	defer f.Close()
-	defer pprof.StopCPUProfile()
+	defer runtime.SetBlockProfileRate(0)
 
 	buckets := flag.String("buckets", "", "buckets file (file format: new-line separated list of bucket names)")
 	config_file := flag.String("config", "", "Transport config file")
