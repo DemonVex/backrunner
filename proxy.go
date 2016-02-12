@@ -827,9 +827,12 @@ func main() {
 		for {
 			time.Sleep(5 * time.Second)
 
+			log.Printf("gc: number of routines befor is %v", runtime.NumGoroutine())
+
 			runtime.GC()
 			debug.ReadGCStats(&stats)
 
+			log.Printf("gc: number of routines after is %v", runtime.NumGoroutine())
 			log.Printf("gc: start: %s, duration: %s\n", stats.LastGC.String(), stats.Pause[0].String())
 		}
 	}()
