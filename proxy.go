@@ -854,6 +854,10 @@ func main() {
 		}()
 	}
 
+	go func() {
+		log.Fatal(http.ListenAndServe("0.0.0.0:6060", nil))
+	}()
+
 	if len(conf.Proxy.Address) != 0 {
 		server := proxy.getTimeoutServer(proxy.bctl.Conf.Proxy.Address, http.HandlerFunc(generic_handler))
 		log.Fatal(server.ListenAndServe())
