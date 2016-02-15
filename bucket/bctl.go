@@ -149,37 +149,6 @@ func (bctl *BucketCtl) FindBucket(name string) (bucket *Bucket, err error) {
 	return bucket, nil
 }
 
-func (bctl *BucketCtl) BucketStatUpdateNolock(stat *elliptics.DnetStat) (err error) {
-	bctl.StatTime = stat.Time
-
-	for _, b := range bctl.AllBuckets() {
-		for _, group := range b.Meta.Groups {
-			sg, ok := stat.Group[group]
-			if ok {
-				b.Group[group] = sg
-			} else {
-				log.Printf("bucket-stat-update: bucket: %s, group: %d: there is no bucket stat, using old values (if any)",
-					b.Name, group)
-			}
-		}
-	}
-
-	return
-}
-
-func (bctl *BucketCtl) BucketStatUpdate() (err error) {
-	stat, err := bctl.e.Stat()
-	if err != nil {
-		return err
-	}
-
-	bctl.Lock()
-	defer bctl.Unlock()
-	err = bctl.BucketStatUpdateNolock(stat)
-
-	return err
-}
-
 func FreeSpaceRatio(st *elliptics.StatBackend, content_length uint64) float64 {
 	free_space_rate := 1.0 - float64(st.VFS.BackendUsedSize + content_length) / float64(st.VFS.TotalSizeLimit)
 	if st.VFS.Avail <= st.VFS.TotalSizeLimit {
@@ -958,19 +927,6 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		log.Printf("config: new back bucket: %s\n", b.Meta.String())
 	}
 
-	stat, err := bctl.e.Stat()
-	if err != nil {
-		return err
-	}
-
-	func() {
-		bctl.Lock()
-		defer bctl.Unlock()
-		bctl.Bucket = new_buckets
-		bctl.BackBucket = new_back_buckets
-		err = bctl.BucketStatUpdateNolock(stat)
-	}()
-
 	log.Printf("Bucket config has been updated, there are %d writable buckets and %d back buckets\n",
 		len(new_buckets), len(new_back_buckets))
 	return nil
@@ -1280,7 +1236,6 @@ func NewBucketCtl(ell *etransport.Elliptics, bucket_path, proxy_config_path stri
 				}
 
 			case <-bctl.BucketStatTimer.C:
-				bctl.BucketStatUpdate()
 
 				if bctl.Conf.Proxy.BucketStatUpdateInterval > 0 {
 					func() {

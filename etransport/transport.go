@@ -80,24 +80,6 @@ func (e *Elliptics) DataSession(req *http.Request) (*elliptics.Session, error) {
 	return s, nil
 }
 
-func (e *Elliptics) Stat() (stat *elliptics.DnetStat, err error) {
-	s, err := elliptics.NewSession(e.Node)
-	if err != nil {
-		return
-	}
-	defer s.Delete()
-
-	stat = s.DnetStat()
-
-	e.Lock()
-	defer e.Unlock()
-
-	stat.Diff(e.prev_stat)
-	e.prev_stat = stat
-
-	return
-}
-
 func NewEllipticsTransport(conf *config.ProxyConfig) (e *Elliptics, err error) {
 	e = &Elliptics {
 		prev_stat: nil,
