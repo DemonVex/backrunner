@@ -521,8 +521,6 @@ func (bctl *BucketCtl) bucket_upload(bucket *Bucket, key string, req *http.Reque
 	time_us := time.Since(start).Nanoseconds() / 1000
 	e := float64(time_us) / float64(total_size)
 
-	bctl.RLock()
-
 	str := make([]string, 0)
 
 	func() {
@@ -941,11 +939,13 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 	}
 
 	back_names := make([]string, 0)
-	bctl.Lock()
-	for _, back_bucket := range bctl.BackBucket {
-		back_names = append(back_names, back_bucket.Name)
+	func() {
+		bctl.Lock()
+		defer bctl.Unlock()
+		for _, back_bucket := range bctl.BackBucket {
+			back_names = append(back_names, back_bucket.Name)
+		}
 	}
-	bctl.Unlock()
 
 	for _, name := range back_names {
 		b, err := ReadBucket(bctl.e, name)

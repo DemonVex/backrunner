@@ -25,7 +25,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"runtime/pprof"
+	_ "net/http/pprof"
 )
 
 const last_errors_length int = 128
@@ -773,15 +773,6 @@ func (proxy *bproxy) getTimeoutServer(addr string, handler http.Handler) *http.S
 
 func main() {
 	var err error
-
-	f, err := os.Create("/tmp/br.prof")
-	if err != nil {
-		log.Fatal(err)
-	}
-	runtime.SetBlockProfileRate(1)
-	pprof.Lookup("block").WriteTo(f, 0)
-	defer f.Close()
-	defer runtime.SetBlockProfileRate(0)
 
 	buckets := flag.String("buckets", "", "buckets file (file format: new-line separated list of bucket names)")
 	config_file := flag.String("config", "", "Transport config file")
