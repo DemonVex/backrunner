@@ -945,7 +945,7 @@ func (bctl *BucketCtl) ReadBucketConfig() (err error) {
 		for _, back_bucket := range bctl.BackBucket {
 			back_names = append(back_names, back_bucket.Name)
 		}
-	}
+	} ()
 
 	for _, name := range back_names {
 		b, err := ReadBucket(bctl.e, name)
