@@ -1,5 +1,5 @@
 #FROM ubuntu:trusty
-FROM reverbrain/backrunner:1.5.2.0.15
+FROM reverbrain/backrunner:1.5.3-0.2.18
 
 #RUN	echo "deb http://repo.reverbrain.com/trusty/ current/amd64/" > /etc/apt/sources.list.d/reverbrain.list && \
 #	echo "deb http://repo.reverbrain.com/trusty/ current/all/" >> /etc/apt/sources.list.d/reverbrain.list && \
@@ -11,7 +11,7 @@ FROM reverbrain/backrunner:1.5.2.0.15
 #	cp -f /usr/share/zoneinfo/posix/W-SU /etc/localtime && \
 #	echo Europe/Moscow > /etc/timezeone
 
-#RUN	VERSION=go1.5.2 && \
+#RUN	VERSION=go1.5.3 && \
 #	curl -O https://storage.googleapis.com/golang/$VERSION.linux-amd64.tar.gz && \
 #	tar -C /usr/local -xf $VERSION.linux-amd64.tar.gz && \
 #	rm -f $VERSION.linux-amd64.tar.gz
